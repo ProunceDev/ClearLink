@@ -67,6 +67,12 @@ jobs:
             -o output/server \
             ./cmd/server
 
+          CGO_ENABLED=0 go build \
+            -trimpath \
+            -ldflags="-s -w -X version.Version=${CLEARLINK_VERSION}" \
+            -o output/clearlink \
+            ./cmd/clearlink
+
           sha256sum output/* > output/SHA256SUMS
 
       - name: Upload build
@@ -126,6 +132,12 @@ jobs:
             -o output/server \
             ./cmd/server
 
+          CGO_ENABLED=0 go build \
+            -trimpath \
+            -ldflags="-s -w -X version.Version=${CLEARLINK_VERSION}" \
+            -o output/clearlink \
+            ./cmd/clearlink
+
           sha256sum output/* > output/SHA256SUMS
 
       - name: Upload build
@@ -166,9 +178,16 @@ jobs:
             -o output/server.exe `
             ./cmd/server
 
-          $hash = (Get-FileHash output/server.exe -Algorithm SHA256).Hash.ToLower()
+          go build `
+            -trimpath `
+            "-ldflags=-s -w -X version.Version=$env:CLEARLINK_VERSION" `
+            -o output/clearlink.exe `
+            ./cmd/clearlink
 
-          "$hash  server.exe" |
+          Get-FileHash output/*.exe -Algorithm SHA256 |
+            ForEach-Object {
+              "$($_.Hash.ToLower())  $($_.Path | Split-Path -Leaf)"
+            } |
             Out-File -Encoding ascii output/SHA256SUMS
 
       - name: Upload build

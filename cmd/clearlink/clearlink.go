@@ -19,6 +19,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"gopkg.in/ini.v1"
 )
 
 const (
@@ -26,16 +28,23 @@ const (
 	GitHubRepo  = "ClearLink"
 	BuildBranch = "builds"
 
-	DefaultUpdateInterval = 5 * time.Second
+	DefaultUpdateInterval = 15 * time.Second
 	ShutdownTimeout       = 10 * time.Second
+	RestartDelay          = 2 * time.Second
+)
+
+const (
+	ansiReset  = "\033[0m"
+	ansiRed    = "\033[31m"
+	ansiGreen  = "\033[32m"
+	ansiYellow = "\033[33m"
+	ansiBlue   = "\033[34m"
+	ansiCyan   = "\033[36m"
+	ansiBold   = "\033[1m"
 )
 
 type Config struct {
 	LinkType string `json:"link_type"`
-
-	ServerAddress string `json:"server_address,omitempty"`
-	Frequency     int64  `json:"frequency,omitempty"`
-	Device        int    `json:"device,omitempty"`
 
 	AutoUpdate     bool          `json:"auto_update"`
 	UpdateInterval time.Duration `json:"update_interval"`
@@ -51,29 +60,34 @@ type LatestBuild struct {
 	Platforms map[string]string `json:"platforms"`
 }
 
+type childExitEvent struct {
+	name string
+	err  error
+}
+
 type Manager struct {
 	config Config
 
-	configPath string
-	baseDir    string
-	currentDir string
-	versionDir string
+	configPath     string
+	linkConfigPath string
+	baseDir        string
+	currentDir     string
+	versionDir     string
 
-	child *exec.Cmd
+	child           *exec.Cmd
+	childName       string
+	stoppingChild   bool
+	childExitCh     chan childExitEvent
+	lastUpdateError string
 }
 
 func main() {
-	fmt.Println()
-	fmt.Println("========================================")
-	fmt.Println("           ClearLink Manager")
-	fmt.Println("========================================")
-	fmt.Println()
+	printBanner("ClearLink Manager")
 
 	if runtime.GOOS != "linux" &&
 		runtime.GOOS != "windows" {
-
 		fatal(
-			"unsupported operating system: " +
+			"unsupported operating system: "+
 				runtime.GOOS,
 		)
 	}
@@ -81,23 +95,24 @@ func main() {
 	if runtime.GOOS == "linux" &&
 		runtime.GOARCH != "amd64" &&
 		runtime.GOARCH != "arm64" {
-
 		fatal(
-			"unsupported Linux architecture: " +
+			"unsupported Linux architecture: "+
 				runtime.GOARCH,
 		)
 	}
 
 	if runtime.GOOS == "windows" &&
 		runtime.GOARCH != "amd64" {
-
 		fatal(
-			"unsupported Windows architecture: " +
+			"unsupported Windows architecture: "+
 				runtime.GOARCH,
 		)
 	}
 
-	manager := newManager()
+	manager, err := newManager()
+	if err != nil {
+		fatal(err.Error())
+	}
 
 	if err := manager.ensureDirectories(); err != nil {
 		fatal(err.Error())
@@ -112,42 +127,51 @@ func main() {
 			fatal(err.Error())
 		}
 
-		fmt.Println("Configuration loaded.")
-		fmt.Println(
-			"Link type:",
-			manager.config.LinkType,
-		)
-		fmt.Println(
-			"Installed version:",
-			displayVersion(
-				manager.config.Version,
-			),
-		)
-		fmt.Println()
+		info("Configuration loaded")
+		info("Link type: %s", manager.config.LinkType)
+		info("Installed version: %s", displayVersion(manager.config.Version))
+
+		if !fileExists(manager.linkConfigPath) {
+			warn("%s is missing; entering setup", manager.linkConfigPath)
+			if err := manager.rebuildLinkConfig(); err != nil {
+				fatal(err.Error())
+			}
+		}
 	}
 
-	fmt.Println("Checking ClearLink installation...")
+	info("Installer base directory: %s", manager.baseDir)
+	info("Checking ClearLink installation")
 
 	if err := manager.ensureInstalled(); err != nil {
 		fatal(err.Error())
 	}
-
-	fmt.Println()
 
 	if err := manager.run(); err != nil {
 		fatal(err.Error())
 	}
 }
 
-func newManager() *Manager {
-	baseDir := defaultBaseDir()
+func newManager() (*Manager, error) {
+	baseDir, err := executableDir()
+	if err != nil {
+		return nil, err
+	}
 
 	return &Manager{
 		baseDir: baseDir,
+		childExitCh: make(
+			chan childExitEvent,
+			4,
+		),
 
 		configPath: filepath.Join(
 			baseDir,
-			"config.json",
+			"manager.json",
+		),
+
+		linkConfigPath: filepath.Join(
+			baseDir,
+			"config.ini",
 		),
 
 		currentDir: filepath.Join(
@@ -159,24 +183,21 @@ func newManager() *Manager {
 			baseDir,
 			"versions",
 		),
-	}
+	}, nil
 }
 
-func defaultBaseDir() string {
-	if runtime.GOOS == "windows" {
-		base := os.Getenv("ProgramData")
-
-		if base == "" {
-			base = `C:\ProgramData`
-		}
-
-		return filepath.Join(
-			base,
-			"ClearLink",
-		)
+func executableDir() (string, error) {
+	exePath, err := os.Executable()
+	if err != nil {
+		return "", err
 	}
 
-	return "/opt/clearlink"
+	realPath, err := filepath.EvalSymlinks(exePath)
+	if err == nil {
+		exePath = realPath
+	}
+
+	return filepath.Dir(exePath), nil
 }
 
 func (m *Manager) ensureDirectories() error {
@@ -205,196 +226,393 @@ func (m *Manager) configExists() bool {
 func (m *Manager) firstRunSetup() error {
 	reader := bufio.NewReader(os.Stdin)
 
-	fmt.Println(
-		"This appears to be the first time ClearLink has been run.",
-	)
-	fmt.Println()
-	fmt.Println(
-		"Let's configure your ClearLink installation.",
-	)
-	fmt.Println()
+	printBanner("First-Time Setup")
+	info("This appears to be your first run")
+	info("A local config.ini will be written next to this executable")
 
-	var config Config
+	cfg := Config{
+		AutoUpdate:     true,
+		UpdateInterval: DefaultUpdateInterval,
+	}
 
-	fmt.Println("What type of link are you setting up?")
 	fmt.Println()
-	fmt.Println("  1. Broadcast")
-	fmt.Println("  2. Listen")
-	fmt.Println("  3. Server")
-	fmt.Println("  4. Broadcast + Listen")
+	info("What type of link are you setting up?")
+	info("  1) Broadcast")
+	info("  2) Listen")
+	info("  3) Server")
 	fmt.Println()
 
 	choice, err := promptNumber(
 		reader,
-		"Select [1-4]: ",
+		"Select [1-3]: ",
 		1,
-		4,
+		3,
 	)
-
 	if err != nil {
 		return err
 	}
 
 	switch choice {
 	case 1:
-		config.LinkType = "broadcast"
-
+		cfg.LinkType = "broadcast"
 	case 2:
-		config.LinkType = "listen"
-
+		cfg.LinkType = "listen"
 	case 3:
-		config.LinkType = "server"
-
-	case 4:
-		config.LinkType = "broadcast-listen"
+		cfg.LinkType = "server"
 	}
 
-	fmt.Println()
-
-	if config.LinkType == "listen" ||
-		config.LinkType == "broadcast-listen" {
-
-		fmt.Println(
-			"RTL-SDR device number.",
-		)
-
-		device, err := promptNumber(
-			reader,
-			"Device [0]: ",
-			0,
-			100,
-		)
-
-		if err != nil {
-			return err
-		}
-
-		config.Device = device
-
-		fmt.Println()
+	if err := m.configureLinkConfig(reader, cfg.LinkType); err != nil {
+		return err
 	}
 
-	if config.LinkType == "listen" ||
-		config.LinkType == "broadcast" ||
-		config.LinkType == "broadcast-listen" {
-
-		fmt.Println(
-			"Frequency configuration.",
-		)
-
-		fmt.Print(
-			"Frequency in Hz [433920000]: ",
-		)
-
-		input, err := reader.ReadString('\n')
-
-		if err != nil {
-			return err
-		}
-
-		input = strings.TrimSpace(input)
-
-		if input == "" {
-			config.Frequency = 433920000
-		} else {
-			value, err := strconv.ParseInt(
-				input,
-				10,
-				64,
-			)
-
-			if err != nil {
-				return err
-			}
-
-			config.Frequency = value
-		}
-
-		fmt.Println()
-	}
-
-	if config.LinkType == "server" ||
-		config.LinkType == "listen" ||
-		config.LinkType == "broadcast-listen" {
-
-		fmt.Println(
-			"Server configuration.",
-		)
-
-		fmt.Print(
-			"Server address [127.0.0.1:4125]: ",
-		)
-
-		input, err := reader.ReadString('\n')
-
-		if err != nil {
-			return err
-		}
-
-		input = strings.TrimSpace(input)
-
-		if input == "" {
-			input = "127.0.0.1:4125"
-		}
-
-		config.ServerAddress = input
-
-		fmt.Println()
-	}
-
-	config.AutoUpdate = true
-	config.UpdateInterval = DefaultUpdateInterval
-
-	m.config = config
+	m.config = cfg
 
 	if err := m.saveConfig(); err != nil {
 		return err
 	}
 
-	fmt.Println(
-		"Configuration saved.",
-	)
+	success("Setup complete")
+	return nil
+}
+
+func (m *Manager) rebuildLinkConfig() error {
+	reader := bufio.NewReader(os.Stdin)
+	return m.configureLinkConfig(reader, m.config.LinkType)
+}
+
+func (m *Manager) configureLinkConfig(reader *bufio.Reader, linkType string) error {
+	cfg := ini.Empty()
+
+	switch linkType {
+	case "server":
+		if err := configureServerSection(reader, cfg); err != nil {
+			return err
+		}
+	case "broadcast":
+		if err := configureBroadcastSection(reader, cfg); err != nil {
+			return err
+		}
+	case "listen":
+		if err := configureListenSection(reader, cfg); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("unsupported link type: %s", linkType)
+	}
+
+	tmp := m.linkConfigPath + ".tmp"
+	if err := cfg.SaveTo(tmp); err != nil {
+		return err
+	}
+
+	if err := os.Rename(tmp, m.linkConfigPath); err != nil {
+		return err
+	}
+
+	success("Wrote link config: %s", m.linkConfigPath)
+	return nil
+}
+
+func configureServerSection(reader *bufio.Reader, cfg *ini.File) error {
+	printBanner("Server Settings")
+
+	serverPort, err := promptIntWithDefault(reader, "ServerPort", 4125)
+	if err != nil {
+		return err
+	}
+
+	webPort, err := promptIntWithDefault(reader, "WebPort", 44325)
+	if err != nil {
+		return err
+	}
+
+	authKey, err := promptStringWithDefault(reader, "AuthKey", "CHANGEME")
+	if err != nil {
+		return err
+	}
+
+	adminUser, err := promptStringWithDefault(reader, "Admin Username", "admin")
+	if err != nil {
+		return err
+	}
+
+	adminPassword, err := promptRequiredString(reader, "Admin Password")
+	if err != nil {
+		return err
+	}
+
+	section := cfg.Section("server")
+	section.Key("Port").SetValue(strconv.Itoa(serverPort))
+	section.Key("WebPort").SetValue(strconv.Itoa(webPort))
+	section.Key("AuthKey").SetValue(authKey)
+	section.Key("AdminUsername").SetValue(adminUser)
+	section.Key("AdminPassword").SetValue(adminPassword)
 
 	return nil
 }
 
-func promptNumber(
-	reader *bufio.Reader,
-	prompt string,
-	min int,
-	max int,
-) (int, error) {
+func configureBroadcastSection(reader *bufio.Reader, cfg *ini.File) error {
+	printBanner("Broadcast Settings")
 
+	authKey, err := promptStringWithDefault(reader, "AuthKey", "CHANGEME")
+	if err != nil {
+		return err
+	}
+
+	serverPort, err := promptIntWithDefault(reader, "ServerPort", 4125)
+	if err != nil {
+		return err
+	}
+
+	serverAddr, err := promptRequiredString(reader, "ServerAddr")
+	if err != nil {
+		return err
+	}
+
+	nodeName, err := promptRequiredString(reader, "NodeName")
+	if err != nil {
+		return err
+	}
+
+	outputType, err := promptChoice(reader, "Type (DISCORD or RADIO)", []string{"DISCORD", "RADIO"}, "DISCORD")
+	if err != nil {
+		return err
+	}
+
+	section := cfg.Section("broadcast")
+	section.Key("AuthKey").SetValue(authKey)
+	section.Key("ServerPort").SetValue(strconv.Itoa(serverPort))
+	section.Key("ServerAddr").SetValue(serverAddr)
+	section.Key("NodeName").SetValue(nodeName)
+	section.Key("Type").SetValue(outputType)
+
+	if outputType == "RADIO" {
+		pttPin, err := promptIntWithDefault(reader, "Ptt_Pin", 4)
+		if err != nil {
+			return err
+		}
+
+		section.Key("Ptt_Pin").SetValue(strconv.Itoa(pttPin))
+	}
+
+	if outputType == "DISCORD" {
+		botToken, err := promptRequiredString(reader, "BotToken")
+		if err != nil {
+			return err
+		}
+
+		guildID, err := promptRequiredString(reader, "GuildID")
+		if err != nil {
+			return err
+		}
+
+		voiceChannelID, err := promptRequiredString(reader, "VoiceChannelID")
+		if err != nil {
+			return err
+		}
+
+		section.Key("BotToken").SetValue(botToken)
+		section.Key("GuildID").SetValue(guildID)
+		section.Key("VoiceChannelID").SetValue(voiceChannelID)
+	}
+
+	return nil
+}
+
+func configureListenSection(reader *bufio.Reader, cfg *ini.File) error {
+	printBanner("Listen Settings")
+
+	authKey, err := promptStringWithDefault(reader, "AuthKey", "CHANGEME")
+	if err != nil {
+		return err
+	}
+
+	serverPort, err := promptIntWithDefault(reader, "ServerPort", 4125)
+	if err != nil {
+		return err
+	}
+
+	serverAddr, err := promptRequiredString(reader, "ServerAddr")
+	if err != nil {
+		return err
+	}
+
+	nodeName, err := promptRequiredString(reader, "NodeName")
+	if err != nil {
+		return err
+	}
+
+	frequencyHz, err := promptFrequencyHz(reader, "Frequency (MHz, e.g. 146.520)")
+	if err != nil {
+		return err
+	}
+
+	section := cfg.Section("listen")
+	section.Key("AuthKey").SetValue(authKey)
+	section.Key("ServerPort").SetValue(strconv.Itoa(serverPort))
+	section.Key("ServerAddr").SetValue(serverAddr)
+	section.Key("NodeName").SetValue(nodeName)
+	section.Key("Frequency").SetValue(strconv.Itoa(frequencyHz))
+
+	return nil
+}
+
+func promptNumber(reader *bufio.Reader, prompt string, min int, max int) (int, error) {
 	for {
-		fmt.Print(prompt)
-
-		input, err := reader.ReadString('\n')
-
+		text, err := promptRaw(reader, prompt)
 		if err != nil {
 			return 0, err
 		}
 
-		input = strings.TrimSpace(input)
-
-		if input == "" {
+		if text == "" {
 			return min, nil
 		}
 
-		value, err := strconv.Atoi(input)
-
-		if err == nil &&
-			value >= min &&
-			value <= max {
-
+		value, err := strconv.Atoi(text)
+		if err == nil && value >= min && value <= max {
 			return value, nil
 		}
 
-		fmt.Printf(
-			"Please enter a number between %d and %d.\n",
-			min,
-			max,
-		)
+		warn("Please enter a number between %d and %d", min, max)
 	}
+}
+
+func promptIntWithDefault(reader *bufio.Reader, key string, defaultValue int) (int, error) {
+	prompt := fmt.Sprintf("%s [%d]: ", key, defaultValue)
+
+	for {
+		text, err := promptRaw(reader, prompt)
+		if err != nil {
+			return 0, err
+		}
+
+		if text == "" {
+			return defaultValue, nil
+		}
+
+		value, err := strconv.Atoi(text)
+		if err == nil {
+			return value, nil
+		}
+
+		warn("Please enter a valid integer")
+	}
+}
+
+func promptStringWithDefault(reader *bufio.Reader, key string, defaultValue string) (string, error) {
+	prompt := fmt.Sprintf("%s [%s]: ", key, defaultValue)
+	text, err := promptRaw(reader, prompt)
+	if err != nil {
+		return "", err
+	}
+
+	if text == "" {
+		return defaultValue, nil
+	}
+
+	return text, nil
+}
+
+func promptRequiredString(reader *bufio.Reader, key string) (string, error) {
+	prompt := fmt.Sprintf("%s: ", key)
+
+	for {
+		text, err := promptRaw(reader, prompt)
+		if err != nil {
+			return "", err
+		}
+
+		if text != "" {
+			return text, nil
+		}
+
+		warn("%s is required", key)
+	}
+}
+
+func promptChoice(reader *bufio.Reader, key string, choices []string, defaultChoice string) (string, error) {
+	prompt := fmt.Sprintf("%s [%s]: ", key, defaultChoice)
+
+	valid := map[string]struct{}{}
+	for _, choice := range choices {
+		valid[strings.ToUpper(choice)] = struct{}{}
+	}
+
+	for {
+		text, err := promptRaw(reader, prompt)
+		if err != nil {
+			return "", err
+		}
+
+		if text == "" {
+			return defaultChoice, nil
+		}
+
+		text = strings.ToUpper(text)
+		if _, ok := valid[text]; ok {
+			return text, nil
+		}
+
+		warn("Valid options: %s", strings.Join(choices, ", "))
+	}
+}
+
+func promptFrequencyHz(reader *bufio.Reader, label string) (int, error) {
+	for {
+		text, err := promptRaw(reader, label+": ")
+		if err != nil {
+			return 0, err
+		}
+
+		value, err := parseFrequency(text)
+		if err == nil {
+			return value, nil
+		}
+
+		warn("Enter a value like 146.520")
+	}
+}
+
+func parseFrequency(input string) (int, error) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return 0, errors.New("empty frequency")
+	}
+
+	if strings.Contains(input, ".") {
+		mhz, err := strconv.ParseFloat(input, 64)
+		if err != nil {
+			return 0, err
+		}
+
+		hz := int(mhz*1_000_000 + 0.5)
+		if hz <= 0 {
+			return 0, errors.New("frequency must be positive")
+		}
+
+		return hz, nil
+	}
+
+	hz, err := strconv.Atoi(input)
+	if err != nil {
+		return 0, err
+	}
+
+	if hz <= 0 {
+		return 0, errors.New("frequency must be positive")
+	}
+
+	return hz, nil
+}
+
+func promptRaw(reader *bufio.Reader, prompt string) (string, error) {
+	fmt.Print(colorize(ansiCyan+ansiBold, prompt))
+	input, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(input), nil
 }
 
 func (m *Manager) saveConfig() error {
@@ -403,7 +621,6 @@ func (m *Manager) saveConfig() error {
 		"",
 		"    ",
 	)
-
 	if err != nil {
 		return err
 	}
@@ -428,7 +645,6 @@ func (m *Manager) loadConfig() error {
 	data, err := os.ReadFile(
 		m.configPath,
 	)
-
 	if err != nil {
 		return err
 	}
@@ -448,10 +664,6 @@ func (m *Manager) loadConfig() error {
 	return nil
 }
 
-// ============================================================
-// GitHub / update information
-// ============================================================
-
 func latestURL() string {
 	return fmt.Sprintf(
 		"https://raw.githubusercontent.com/%s/%s/%s/latest.json",
@@ -461,14 +673,8 @@ func latestURL() string {
 	)
 }
 
-func binaryURL(
-	version string,
-	platform string,
-	binary string,
-) string {
-
+func binaryURL(version string, platform string, binary string) string {
 	extension := ""
-
 	if runtime.GOOS == "windows" {
 		extension = ".exe"
 	}
@@ -485,11 +691,7 @@ func binaryURL(
 	)
 }
 
-func checksumsURL(
-	version string,
-	platform string,
-) string {
-
+func checksumsURL(version string, platform string) string {
 	return fmt.Sprintf(
 		"https://raw.githubusercontent.com/%s/%s/%s/%s/%s/SHA256SUMS",
 		GitHubOwner,
@@ -503,76 +705,47 @@ func checksumsURL(
 func fetchLatest() (*LatestBuild, error) {
 	var latest LatestBuild
 
-	if err := httpJSON(
-		latestURL(),
-		&latest,
-	); err != nil {
+	if err := httpJSON(latestURL(), &latest); err != nil {
 		return nil, err
 	}
 
 	if latest.Version == "" {
-		return nil, errors.New(
-			"latest.json did not contain a version",
-		)
+		return nil, errors.New("latest.json did not contain a version")
 	}
 
 	return &latest, nil
 }
 
-func httpJSON(
-	url string,
-	output any,
-) error {
-
-	req, err := http.NewRequest(
-		http.MethodGet,
-		url,
-		nil,
-	)
-
+func httpJSON(url string, output any) error {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
 
-	req.Header.Set(
-		"User-Agent",
-		"ClearLink",
-	)
+	req.Header.Set("User-Agent", "ClearLink")
 
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
+	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
-
 	if err != nil {
 		return err
 	}
-
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf(
-			"HTTP %s",
-			resp.Status,
-		)
+		return fmt.Errorf("HTTP %s", resp.Status)
 	}
 
-	return json.NewDecoder(
-		resp.Body,
-	).Decode(output)
+	return json.NewDecoder(resp.Body).Decode(output)
 }
 
 func platformName() string {
 	switch runtime.GOOS {
 	case "windows":
 		return "windows-amd64"
-
 	case "linux":
 		switch runtime.GOARCH {
 		case "amd64":
 			return "linux-amd64"
-
 		case "arm64":
 			return "linux-arm64"
 		}
@@ -581,200 +754,90 @@ func platformName() string {
 	return ""
 }
 
-// ============================================================
-// Installation
-// ============================================================
-
 func (m *Manager) ensureInstalled() error {
 	latest, err := fetchLatest()
-
 	if err != nil {
-		return fmt.Errorf(
-			"checking latest build: %w",
-			err,
-		)
+		return fmt.Errorf("checking latest build: %w", err)
 	}
 
-	fmt.Println(
-		"Latest successful build:",
-		latest.Version,
-	)
-
-	if latest.Version == m.config.Version &&
-		m.hasInstalledBinary() {
-
-		fmt.Println(
-			"Already running latest version.",
-		)
-
+	if latest.Version == m.config.Version && m.hasInstalledBinary() {
+		success("Already running latest version: %s", displayVersion(latest.Version))
 		return nil
 	}
 
-	fmt.Println()
-	fmt.Println("Update available.")
-	fmt.Println()
-	fmt.Println(
-		"Current:",
-		displayVersion(m.config.Version),
-	)
-	fmt.Println(
-		"Latest:",
-		displayVersion(latest.Version),
-	)
-	fmt.Println()
-
-	return m.installVersion(
-		latest.Version,
-	)
-}
-
-func (m *Manager) installVersion(
-	version string,
-) error {
-
-	platform := platformName()
-
-	if platform == "" {
-		return errors.New(
-			"unsupported platform",
-		)
+	if m.config.Version == "" || !m.hasInstalledBinary() {
+		info("Installing %s", displayVersion(latest.Version))
+	} else {
+		warn("Update available: %s -> %s", displayVersion(m.config.Version), displayVersion(latest.Version))
 	}
 
-	fmt.Println(
-		"Platform:",
-		platform,
-	)
+	return m.installVersion(latest.Version)
+}
 
-	// Download every binary that this configuration
-	// can potentially need.
+func (m *Manager) installVersion(version string) error {
+	platform := platformName()
+	if platform == "" {
+		return errors.New("unsupported platform")
+	}
+
+	info("Target platform: %s", platform)
+
 	binaries := m.binariesForLink()
-
-	tempDir, err := os.MkdirTemp(
-		"",
-		"clearlink-update-*",
-	)
-
+	tempDir, err := os.MkdirTemp("", "clearlink-update-*")
 	if err != nil {
 		return err
 	}
-
 	defer os.RemoveAll(tempDir)
 
-	versionDir := filepath.Join(
-		m.versionDir,
-		version,
-	)
-
-	if err := os.MkdirAll(
-		versionDir,
-		0755,
-	); err != nil {
+	versionDir := filepath.Join(m.versionDir, version)
+	if err := os.MkdirAll(versionDir, 0755); err != nil {
 		return err
 	}
 
 	for _, binary := range binaries {
-		fmt.Println()
-		fmt.Println(
-			"Downloading",
-			binary,
-			"...",
-		)
+		info("Downloading %s", binary)
 
-		tempPath := filepath.Join(
-			tempDir,
-			binary,
-		)
+		tempPath := filepath.Join(tempDir, binary)
+		url := binaryURL(version, platform, binary)
 
-		url := binaryURL(
-			version,
-			platform,
-			binary,
-		)
-
-		if err := downloadFile(
-			url,
-			tempPath,
-		); err != nil {
-			return fmt.Errorf(
-				"downloading %s: %w",
-				binary,
-				err,
-			)
+		if err := downloadFile(url, tempPath); err != nil {
+			return fmt.Errorf("downloading %s: %w", binary, err)
 		}
 
-		fmt.Println(
-			"Downloaded",
-			binary,
-		)
-
-		if err := installFile(
-			tempPath,
-			filepath.Join(
-				versionDir,
-				executableName(binary),
-			),
-		); err != nil {
+		if err := installFile(tempPath, filepath.Join(versionDir, executableName(binary))); err != nil {
 			return err
 		}
+
+		success("Downloaded %s", binary)
 	}
 
-	// Verify all downloaded binaries.
-	checksumURL := checksumsURL(
-		version,
-		platform,
-	)
+	checksumURL := checksumsURL(version, platform)
+	checksumPath := filepath.Join(tempDir, "SHA256SUMS")
 
-	checksumPath := filepath.Join(
-		tempDir,
-		"SHA256SUMS",
-	)
-
-	if err := downloadFile(
-		checksumURL,
-		checksumPath,
-	); err != nil {
-		return fmt.Errorf(
-			"downloading checksums: %w",
-			err,
-		)
+	if err := downloadFile(checksumURL, checksumPath); err != nil {
+		return fmt.Errorf("downloading checksums: %w", err)
 	}
 
-	if err := verifyChecksums(
-		checksumPath,
-		versionDir,
-		binaries,
-	); err != nil {
+	if err := verifyChecksums(checksumPath, versionDir, binaries); err != nil {
 		return err
 	}
 
-	// If ClearLink is already running, stop it before
-	// replacing current/.
 	if m.child != nil {
 		if err := m.stopChild(); err != nil {
 			return err
 		}
 	}
 
-	if err := replaceDirectory(
-		versionDir,
-		m.currentDir,
-	); err != nil {
+	if err := replaceDirectory(versionDir, m.currentDir); err != nil {
 		return err
 	}
 
 	m.config.Version = version
-
 	if err := m.saveConfig(); err != nil {
 		return err
 	}
 
-	fmt.Println()
-	fmt.Println(
-		"✓ ClearLink",
-		displayVersion(version),
-		"installed.",
-	)
-
+	success("Installed ClearLink %s", displayVersion(version))
 	return nil
 }
 
@@ -786,36 +849,23 @@ func executableName(name string) string {
 	return name
 }
 
-func installFile(
-	source string,
-	destination string,
-) error {
-
-	if err := os.MkdirAll(
-		filepath.Dir(destination),
-		0755,
-	); err != nil {
+func installFile(source string, destination string) error {
+	if err := os.MkdirAll(filepath.Dir(destination), 0755); err != nil {
 		return err
 	}
 
 	src, err := os.Open(source)
-
 	if err != nil {
 		return err
 	}
-
 	defer src.Close()
 
 	dst, err := os.Create(destination)
-
 	if err != nil {
 		return err
 	}
 
-	if _, err := io.Copy(
-		dst,
-		src,
-	); err != nil {
+	if _, err := io.Copy(dst, src); err != nil {
 		dst.Close()
 		return err
 	}
@@ -825,20 +875,13 @@ func installFile(
 	}
 
 	if runtime.GOOS != "windows" {
-		return os.Chmod(
-			destination,
-			0755,
-		)
+		return os.Chmod(destination, 0755)
 	}
 
 	return nil
 }
 
-func verifyChecksums(
-	checksumFile string,
-	directory string,
-	requiredFiles []string,
-) error {
+func verifyChecksums(checksumFile string, directory string, requiredFiles []string) error {
 	data, err := os.ReadFile(checksumFile)
 	if err != nil {
 		return err
@@ -848,37 +891,18 @@ func verifyChecksums(
 
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
-
 		if line == "" {
 			continue
 		}
 
 		fields := strings.Fields(line)
-
 		if len(fields) < 2 {
-			return fmt.Errorf(
-				"invalid checksum line: %q",
-				line,
-			)
+			return fmt.Errorf("invalid checksum line: %q", line)
 		}
 
 		hash := strings.ToLower(fields[0])
-
-		filename := strings.TrimPrefix(
-			fields[len(fields)-1],
-			"*",
-		)
-
-		// Handle checksums generated as:
-		//
-		// hash  broadcast
-		//
-		// as well as:
-		//
-		// hash  output/broadcast
-		//
+		filename := strings.TrimPrefix(fields[len(fields)-1], "*")
 		filename = filepath.Base(filename)
-
 		checksums[filename] = hash
 	}
 
@@ -887,198 +911,132 @@ func verifyChecksums(
 
 		expected, ok := checksums[filename]
 		if !ok {
-			return fmt.Errorf(
-				"no checksum found for %s",
-				filename,
-			)
+			return fmt.Errorf("no checksum found for %s", filename)
 		}
 
-		path := filepath.Join(
-			directory,
-			filename,
-		)
-
+		path := filepath.Join(directory, filename)
 		actual, err := sha256File(path)
 		if err != nil {
-			return fmt.Errorf(
-				"verifying %s: %w",
-				filename,
-				err,
-			)
+			return fmt.Errorf("verifying %s: %w", filename, err)
 		}
 
-		if !strings.EqualFold(
-			actual,
-			expected,
-		) {
-			return fmt.Errorf(
-				"SHA-256 mismatch for %s\nexpected: %s\nactual:   %s",
-				filename,
-				expected,
-				actual,
-			)
+		if !strings.EqualFold(actual, expected) {
+			return fmt.Errorf("SHA-256 mismatch for %s\nexpected: %s\nactual:   %s", filename, expected, actual)
 		}
 
-		fmt.Println(
-			"✓ Verified",
-			filename,
-		)
+		success("Verified %s", filename)
 	}
 
 	return nil
 }
 
-func sha256File(
-	path string,
-) (string, error) {
-
+func sha256File(path string) (string, error) {
 	file, err := os.Open(path)
-
 	if err != nil {
 		return "", err
 	}
-
 	defer file.Close()
 
 	hash := sha256.New()
-
-	if _, err := io.Copy(
-		hash,
-		file,
-	); err != nil {
+	if _, err := io.Copy(hash, file); err != nil {
 		return "", err
 	}
 
-	return hex.EncodeToString(
-		hash.Sum(nil),
-	), nil
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-// ============================================================
-// Runtime
-// ============================================================
-
 func (m *Manager) run() error {
-	ctx, cancel := signal.NotifyContext(
-		context.Background(),
-		os.Interrupt,
-		syscall.SIGTERM,
-	)
-
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	fmt.Println()
-	fmt.Println("========================================")
-	fmt.Println("         ClearLink is running")
-	fmt.Println("========================================")
-	fmt.Println()
-	fmt.Println(
-		"Link type:",
-		m.config.LinkType,
-	)
-	fmt.Println(
-		"Version:",
-		displayVersion(m.config.Version),
-	)
-	fmt.Println()
+	printBanner("ClearLink Running")
+	info("Link type: %s", m.config.LinkType)
+	info("Version: %s", displayVersion(m.config.Version))
+	info("Working directory: %s", m.baseDir)
 
 	if err := m.startChild(); err != nil {
 		return err
 	}
 
-	ticker := time.NewTicker(
-		m.config.UpdateInterval,
-	)
-
+	ticker := time.NewTicker(m.config.UpdateInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			fmt.Println()
-			fmt.Println(
-				"Shutting down ClearLink...",
-			)
-
+			warn("Shutdown requested")
 			return m.stopChild()
 
+		case exit := <-m.childExitCh:
+			m.child = nil
+			m.childName = ""
+
+			if m.stoppingChild {
+				m.stoppingChild = false
+				continue
+			}
+
+			if exit.err != nil {
+				warn("%s exited unexpectedly: %v", exit.name, exit.err)
+			} else {
+				warn("%s exited unexpectedly", exit.name)
+			}
+
+			warn("Restarting in %s", RestartDelay)
+
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(RestartDelay):
+			}
+
+			if err := m.startChild(); err != nil {
+				return err
+			}
+
 		case <-ticker.C:
-			if m.config.AutoUpdate {
-				if err := m.checkForUpdate(); err != nil {
-					fmt.Println(
-						"Update check failed:",
-						err,
-					)
+			if !m.config.AutoUpdate {
+				continue
+			}
+
+			updated, err := m.checkForUpdate()
+			if err != nil {
+				if err.Error() != m.lastUpdateError {
+					warn("Update check failed: %v", err)
+					m.lastUpdateError = err.Error()
 				}
+				continue
+			}
+
+			m.lastUpdateError = ""
+			if updated {
+				success("Update complete")
 			}
 		}
 	}
 }
 
-func (m *Manager) checkForUpdate() error {
-	fmt.Println()
-	fmt.Println(
-		"Checking for ClearLink updates...",
-	)
-
+func (m *Manager) checkForUpdate() (bool, error) {
 	latest, err := fetchLatest()
-
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if latest.Version == m.config.Version {
-		fmt.Println(
-			"✓ Already up to date.",
-		)
-
-		return nil
+		return false, nil
 	}
 
-	fmt.Println()
-	fmt.Println(
-		"========================================",
-	)
-	fmt.Println(
-		"          UPDATE AVAILABLE",
-	)
-	fmt.Println(
-		"========================================",
-	)
-	fmt.Println()
+	warn("Update available: %s -> %s", displayVersion(m.config.Version), displayVersion(latest.Version))
 
-	fmt.Println(
-		"Current:",
-		displayVersion(m.config.Version),
-	)
-
-	fmt.Println(
-		"Latest:",
-		displayVersion(latest.Version),
-	)
-
-	fmt.Println()
-
-	if err := m.installVersion(
-		latest.Version,
-	); err != nil {
-		return err
+	if err := m.installVersion(latest.Version); err != nil {
+		return false, err
 	}
-
-	fmt.Println()
-	fmt.Println(
-		"Starting updated ClearLink...",
-	)
 
 	if err := m.startChild(); err != nil {
-		return err
+		return false, err
 	}
 
-	fmt.Println(
-		"✓ Update complete.",
-	)
-
-	return nil
+	return true, nil
 }
 
 func (m *Manager) startChild() error {
@@ -1087,55 +1045,28 @@ func (m *Manager) startChild() error {
 	}
 
 	binaries := m.binariesForLink()
-
 	if len(binaries) == 0 {
-		return errors.New(
-			"no executable selected",
-		)
+		return errors.New("no executable selected")
 	}
 
-	// Single-process configuration.
 	if len(binaries) == 1 {
-		return m.startSingle(
-			binaries[0],
-		)
+		return m.startSingle(binaries[0])
 	}
 
-	// Broadcast + Listen requires two child processes.
-	// See note below.
-	return errors.New(
-		"broadcast-listen mode needs multi-process support",
-	)
+	return errors.New("broadcast-listen mode needs multi-process support")
 }
 
-func (m *Manager) startSingle(
-	name string,
-) error {
-
-	path := filepath.Join(
-		m.currentDir,
-		executableName(name),
-	)
+func (m *Manager) startSingle(name string) error {
+	path := filepath.Join(m.currentDir, executableName(name))
 
 	if !fileExists(path) {
-		return fmt.Errorf(
-			"binary not found: %s",
-			path,
-		)
+		return fmt.Errorf("binary not found: %s", path)
 	}
 
-	args := m.argumentsFor(name)
+	info("Starting %s", name)
 
-	fmt.Println(
-		"Starting:",
-		name,
-	)
-
-	cmd := exec.Command(
-		path,
-		args...,
-	)
-
+	cmd := exec.Command(path)
+	cmd.Dir = m.baseDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
@@ -1145,64 +1076,61 @@ func (m *Manager) startSingle(
 	}
 
 	m.child = cmd
+	m.childName = name
+	m.stoppingChild = false
 
-	fmt.Println(
-		"Started with PID",
-		cmd.Process.Pid,
-	)
+	go func(name string, cmd *exec.Cmd) {
+		m.childExitCh <- childExitEvent{
+			name: name,
+			err:  cmd.Wait(),
+		}
+	}(name, cmd)
 
+	success("Started PID %d", cmd.Process.Pid)
 	return nil
 }
 
 func (m *Manager) stopChild() error {
-	if m.child == nil ||
-		m.child.Process == nil {
-
+	if m.child == nil || m.child.Process == nil {
 		m.child = nil
-
+		m.childName = ""
+		m.stoppingChild = false
 		return nil
 	}
 
-	fmt.Println(
-		"Stopping ClearLink...",
-	)
-
+	warn("Stopping ClearLink process")
 	process := m.child.Process
+	m.stoppingChild = true
 
 	if runtime.GOOS == "windows" {
 		_ = process.Kill()
 	} else {
-		_ = process.Signal(
-			syscall.SIGTERM,
-		)
+		_ = process.Signal(syscall.SIGTERM)
 	}
-
-	done := make(chan error, 1)
-
-	go func() {
-		done <- m.child.Wait()
-	}()
 
 	select {
-	case <-done:
+	case <-m.childExitCh:
 		m.child = nil
-
+		m.childName = ""
+		m.stoppingChild = false
 	case <-time.After(ShutdownTimeout):
-		fmt.Println(
-			"ClearLink did not exit gracefully.",
-		)
-
+		warn("Process did not exit gracefully; force killing")
 		_ = process.Kill()
 
-		<-done
-
-		m.child = nil
+		select {
+		case <-m.childExitCh:
+			m.child = nil
+			m.childName = ""
+			m.stoppingChild = false
+		case <-time.After(ShutdownTimeout):
+			m.child = nil
+			m.childName = ""
+			m.stoppingChild = false
+			return errors.New("process did not terminate after force kill")
+		}
 	}
 
-	fmt.Println(
-		"ClearLink stopped.",
-	)
-
+	success("Process stopped")
 	return nil
 }
 
@@ -1210,99 +1138,20 @@ func (m *Manager) binariesForLink() []string {
 	switch m.config.LinkType {
 	case "broadcast":
 		return []string{"broadcast"}
-
 	case "listen":
 		return []string{"listen"}
-
 	case "server":
 		return []string{"server"}
-
 	case "broadcast-listen":
-		return []string{
-			"broadcast",
-			"listen",
-		}
+		return []string{"broadcast", "listen"}
 	}
 
 	return nil
 }
 
-func (m *Manager) argumentsFor(
-	name string,
-) []string {
-
-	var args []string
-
-	switch name {
-	case "broadcast":
-
-		if m.config.ServerAddress != "" {
-			args = append(
-				args,
-				"--server",
-				m.config.ServerAddress,
-			)
-		}
-
-		if m.config.Frequency != 0 {
-			args = append(
-				args,
-				"--frequency",
-				strconv.FormatInt(
-					m.config.Frequency,
-					10,
-				),
-			)
-		}
-
-	case "listen":
-
-		if m.config.ServerAddress != "" {
-			args = append(
-				args,
-				"--server",
-				m.config.ServerAddress,
-			)
-		}
-
-		if m.config.Frequency != 0 {
-			args = append(
-				args,
-				"--frequency",
-				strconv.FormatInt(
-					m.config.Frequency,
-					10,
-				),
-			)
-		}
-
-		args = append(
-			args,
-			"--device",
-			strconv.Itoa(
-				m.config.Device,
-			),
-		)
-
-	case "server":
-		// Add server arguments here.
-	}
-
-	return args
-}
-
-// ============================================================
-// Filesystem
-// ============================================================
-
 func (m *Manager) hasInstalledBinary() bool {
 	for _, binary := range m.binariesForLink() {
-		if !fileExists(
-			filepath.Join(
-				m.currentDir,
-				executableName(binary),
-			),
-		) {
+		if !fileExists(filepath.Join(m.currentDir, executableName(binary))) {
 			return false
 		}
 	}
@@ -1312,108 +1161,54 @@ func (m *Manager) hasInstalledBinary() bool {
 
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
-
-	return err == nil &&
-		!info.IsDir()
+	return err == nil && !info.IsDir()
 }
 
-func replaceDirectory(
-	source string,
-	destination string,
-) error {
-
+func replaceDirectory(source string, destination string) error {
 	backup := destination + ".old"
-
 	_ = os.RemoveAll(backup)
 
-	if _, err := os.Stat(
-		destination,
-	); err == nil {
-
-		if err := os.Rename(
-			destination,
-			backup,
-		); err != nil {
+	if _, err := os.Stat(destination); err == nil {
+		if err := os.Rename(destination, backup); err != nil {
 			return err
 		}
 	}
 
-	if err := os.Rename(
-		source,
-		destination,
-	); err != nil {
-
-		_ = os.Rename(
-			backup,
-			destination,
-		)
-
+	if err := os.Rename(source, destination); err != nil {
+		_ = os.Rename(backup, destination)
 		return err
 	}
 
 	_ = os.RemoveAll(backup)
-
 	return nil
 }
 
-// ============================================================
-// HTTP
-// ============================================================
-
-func downloadFile(
-	url string,
-	destination string,
-) error {
-
-	req, err := http.NewRequest(
-		http.MethodGet,
-		url,
-		nil,
-	)
-
+func downloadFile(url string, destination string) error {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
 
-	req.Header.Set(
-		"User-Agent",
-		"ClearLink",
-	)
+	req.Header.Set("User-Agent", "ClearLink")
 
-	client := &http.Client{
-		Timeout: 10 * time.Minute,
-	}
-
+	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Do(req)
-
 	if err != nil {
 		return err
 	}
-
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf(
-			"download failed: %s",
-			resp.Status,
-		)
+		return fmt.Errorf("download failed: %s", resp.Status)
 	}
 
-	file, err := os.Create(
-		destination,
-	)
-
+	file, err := os.Create(destination)
 	if err != nil {
 		return err
 	}
-
 	defer file.Close()
 
-	_, err = io.Copy(
-		file,
-		resp.Body,
-	)
-
+	_, err = io.Copy(file, resp.Body)
 	return err
 }
 
@@ -1429,12 +1224,55 @@ func displayVersion(version string) string {
 	return version
 }
 
-func fatal(message string) {
-	fmt.Fprintln(
-		os.Stderr,
-		"ERROR:",
-		message,
-	)
+func supportsColor() bool {
+	if runtime.GOOS == "windows" {
+		return true
+	}
 
+	term := os.Getenv("TERM")
+	return term != "" && term != "dumb"
+}
+
+func colorize(color string, message string) string {
+	if !supportsColor() {
+		return message
+	}
+
+	return color + message + ansiReset
+}
+
+func printBanner(title string) {
+	line := strings.Repeat("=", 40)
+	fmt.Println()
+	fmt.Println(colorize(ansiCyan, line))
+	fmt.Println(colorize(ansiCyan+ansiBold, center(title, 40)))
+	fmt.Println(colorize(ansiCyan, line))
+	fmt.Println()
+}
+
+func center(text string, width int) string {
+	if len(text) >= width {
+		return text
+	}
+
+	left := (width - len(text)) / 2
+	right := width - len(text) - left
+	return strings.Repeat(" ", left) + text + strings.Repeat(" ", right)
+}
+
+func info(format string, args ...any) {
+	fmt.Println(colorize(ansiBlue, "[INFO] ") + fmt.Sprintf(format, args...))
+}
+
+func success(format string, args ...any) {
+	fmt.Println(colorize(ansiGreen, "[ OK ] ") + fmt.Sprintf(format, args...))
+}
+
+func warn(format string, args ...any) {
+	fmt.Println(colorize(ansiYellow, "[WARN] ") + fmt.Sprintf(format, args...))
+}
+
+func fatal(message string) {
+	fmt.Fprintln(os.Stderr, colorize(ansiRed+ansiBold, "[FAIL] ")+message)
 	os.Exit(1)
 }
