@@ -3,77 +3,19 @@ name: Build ClearLink
 on:
   push:
     branches:
-      - "**"
+      - main
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
+  
 permissions:
-  contents: read
-  pull-requests: read
+  contents: write
+
+concurrency:
+  group: clearlink-build
+  cancel-in-progress: true
 
 jobs:
-
-  # ============================================================
-  # Windows AMD64
-  # Only the server is supported on Windows.
-  # ============================================================
-
-  windows:
-    name: Windows AMD64
-    runs-on: windows-latest
-
-    steps:
-      - name: Checkout commit
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Get commit information
-        id: version
-        shell: bash
-        run: |
-          echo "sha=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
-          echo "short_sha=$(echo '${{ github.event.pull_request.head.sha }}' | cut -c1-8)" >> "$GITHUB_OUTPUT"
-
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Build server
-        env:
-          GOOS: windows
-          GOARCH: amd64
-          CGO_ENABLED: "0"
-          VERSION: ${{ steps.version.outputs.sha }}
-        shell: bash
-        run: |
-          mkdir -p dist
-
-          go build \
-            -trimpath \
-            -ldflags="-s -w -X version.Version=${VERSION}" \
-            -o "dist/clearlink-server-windows-amd64.exe" \
-            ./cmd/server
-
-      - name: Generate checksum
-        shell: bash
-        run: |
-          cd dist
-          sha256sum * > checksums.txt
-
-      - name: Upload Windows artifact
-        uses: actions/upload-artifact@v5
-        with:
-          name: clearlink-windows-amd64
-          path: dist/
-          retention-days: 30
-
 
   # ============================================================
   # Linux AMD64
@@ -81,107 +23,245 @@ jobs:
 
   linux-amd64:
     name: Linux AMD64
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout commit
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v7
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          go-version: '1.24.4'
+          cache: true
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Get commit information
-        id: version
+      - name: Install dependencies
         run: |
-          echo "sha=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
-          echo "short_sha=$(echo '${{ github.event.pull_request.head.sha }}' | cut -c1-8)" >> "$GITHUB_OUTPUT"
+          sudo apt-get update
+          sudo apt-get install -y \
+            libopus-dev \
+            libopusfile-dev \
+            librtlsdr-dev \
+            libgpiod-dev \
+            pkg-config
 
-      - name: Build Linux AMD64
+      - name: Build
         env:
-          CLEARLINK_VERSION: ${{ steps.version.outputs.sha }}
+          CLEARLINK_VERSION: ${{ github.sha }}
         run: |
-          docker buildx build \
-            --platform linux/amd64 \
-            --build-arg CLEARLINK_VERSION="${CLEARLINK_VERSION}" \
-            --file build/Dockerfile \
-            --output type=local,dest=dist \
-            .
+          mkdir -p output
 
-      - name: Rename binaries
-        run: |
-          mv dist/broadcast dist/clearlink-broadcast-linux-amd64
-          mv dist/listen dist/clearlink-listen-linux-amd64
-          mv dist/server dist/clearlink-server-linux-amd64
+          CGO_ENABLED=1 go build \
+            -trimpath \
+            -ldflags="-s -w -X version.Version=${CLEARLINK_VERSION}" \
+            -o output/broadcast \
+            ./cmd/broadcast
 
-      - name: Generate checksum
-        run: |
-          cd dist
-          sha256sum * > checksums.txt
+          CGO_ENABLED=1 go build \
+            -trimpath \
+            -ldflags="-s -w -X version.Version=${CLEARLINK_VERSION}" \
+            -o output/listen \
+            ./cmd/listen
 
-      - name: Upload Linux AMD64 artifact
+          CGO_ENABLED=0 go build \
+            -trimpath \
+            -ldflags="-s -w -X version.Version=${CLEARLINK_VERSION}" \
+            -o output/server \
+            ./cmd/server
+
+          sha256sum output/* > output/SHA256SUMS
+
+      - name: Upload build
         uses: actions/upload-artifact@v5
         with:
           name: clearlink-linux-amd64
-          path: dist/
-          retention-days: 30
+          path: output/
 
 
   # ============================================================
-  # Raspberry Pi 5 ARM64
+  # Linux ARM64
   # ============================================================
 
   linux-arm64:
-    name: Raspberry Pi 5 ARM64
-    runs-on: ubuntu-latest
+    name: Linux ARM64 / Raspberry Pi
+    runs-on: ubuntu-24.04-arm
 
     steps:
-      - name: Checkout commit
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v7
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          go-version: '1.24.4'
+          cache: true
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Get commit information
-        id: version
+      - name: Install dependencies
         run: |
-          echo "sha=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
-          echo "short_sha=$(echo '${{ github.event.pull_request.head.sha }}' | cut -c1-8)" >> "$GITHUB_OUTPUT"
+          sudo apt-get update
+          sudo apt-get install -y \
+            libopus-dev \
+            libopusfile-dev \
+            librtlsdr-dev \
+            libgpiod-dev \
+            pkg-config
 
-      - name: Build Raspberry Pi ARM64
+      - name: Build
         env:
-          CLEARLINK_VERSION: ${{ steps.version.outputs.sha }}
+          CLEARLINK_VERSION: ${{ github.sha }}
         run: |
-          docker buildx build \
-            --platform linux/arm64 \
-            --build-arg CLEARLINK_VERSION="${CLEARLINK_VERSION}" \
-            --file build/Dockerfile \
-            --output type=local,dest=dist \
-            .
+          mkdir -p output
 
-      - name: Rename binaries
-        run: |
-          mv dist/broadcast dist/clearlink-broadcast-linux-arm64
-          mv dist/listen dist/clearlink-listen-linux-arm64
-          mv dist/server dist/clearlink-server-linux-arm64
+          CGO_ENABLED=1 go build \
+            -trimpath \
+            -ldflags="-s -w -X version.Version=${CLEARLINK_VERSION}" \
+            -o output/broadcast \
+            ./cmd/broadcast
 
-      - name: Generate checksum
-        run: |
-          cd dist
-          sha256sum * > checksums.txt
+          CGO_ENABLED=1 go build \
+            -trimpath \
+            -ldflags="-s -w -X version.Version=${CLEARLINK_VERSION}" \
+            -o output/listen \
+            ./cmd/listen
 
-      - name: Upload Raspberry Pi artifact
+          CGO_ENABLED=0 go build \
+            -trimpath \
+            -ldflags="-s -w -X version.Version=${CLEARLINK_VERSION}" \
+            -o output/server \
+            ./cmd/server
+
+          sha256sum output/* > output/SHA256SUMS
+
+      - name: Upload build
         uses: actions/upload-artifact@v5
         with:
           name: clearlink-linux-arm64
-          path: dist/
-          retention-days: 30
+          path: output/
+
+
+  # ============================================================
+  # Windows AMD64
+  # ============================================================
+
+  windows-amd64:
+    name: Windows AMD64
+    runs-on: windows-2025
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.24.4'
+          cache: true
+
+      - name: Build
+        shell: pwsh
+        env:
+          CLEARLINK_VERSION: ${{ github.sha }}
+        run: |
+          New-Item -ItemType Directory -Force -Path output | Out-Null
+
+          $env:CGO_ENABLED = "0"
+
+          go build `
+            -trimpath `
+            "-ldflags=-s -w -X version.Version=$env:CLEARLINK_VERSION" `
+            -o output/server.exe `
+            ./cmd/server
+
+          $hash = (Get-FileHash output/server.exe -Algorithm SHA256).Hash.ToLower()
+
+          "$hash  server.exe" |
+            Out-File -Encoding ascii output/SHA256SUMS
+
+      - name: Upload build
+        uses: actions/upload-artifact@v5
+        with:
+          name: clearlink-windows-amd64
+          path: output/
+
+
+  # ============================================================
+  # Publish
+  # ============================================================
+
+  publish:
+    name: Publish build
+    needs:
+      - linux-amd64
+      - linux-arm64
+      - windows-amd64
+
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Download Linux AMD64
+        uses: actions/download-artifact@v5
+        with:
+          name: clearlink-linux-amd64
+          path: publish/linux-amd64
+
+      - name: Download Linux ARM64
+        uses: actions/download-artifact@v5
+        with:
+          name: clearlink-linux-arm64
+          path: publish/linux-arm64
+
+      - name: Download Windows AMD64
+        uses: actions/download-artifact@v5
+        with:
+          name: clearlink-windows-amd64
+          path: publish/windows-amd64
+
+      - name: Create metadata
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          cat > latest.json <<EOF
+          {
+            "version": "$SHA",
+            "commit": "$SHA",
+            "updated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "linux-amd64": "$SHA/linux-amd64",
+              "linux-arm64": "$SHA/linux-arm64",
+              "windows-amd64": "$SHA/windows-amd64"
+            }
+          }
+          EOF
+
+          cp latest.json publish/latest.json
+
+      - name: Publish to builds branch
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin builds || true
+
+          if git show-ref --verify --quiet refs/remotes/origin/builds; then
+            git checkout -B builds origin/builds
+          else
+            git checkout --orphan builds
+            git rm -rf . || true
+          fi
+
+          # Remove everything except previous builds.
+          # Each commit remains available for rollback.
+          mkdir -p "$SHA"
+
+          cp -r publish/linux-amd64 "$SHA/"
+          cp -r publish/linux-arm64 "$SHA/"
+          cp -r publish/windows-amd64 "$SHA/"
+
+          cp publish/latest.json latest.json
+
+          git add "$SHA" latest.json
+
+          git commit -m "Build $SHA"
+
+          git push origin builds
