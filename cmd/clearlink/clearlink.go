@@ -705,7 +705,15 @@ func checksumsURL(version string, platform string) string {
 func fetchLatest() (*LatestBuild, error) {
 	var latest LatestBuild
 
-	if err := httpJSON(latestURL(), &latest); err != nil {
+	url := latestURL()
+
+	// Prevent cached latest.json responses.
+	url += "?t=" + strconv.FormatInt(
+		time.Now().UnixNano(),
+		10,
+	)
+
+	if err := httpJSON(url, &latest); err != nil {
 		return nil, err
 	}
 
