@@ -1,0 +1,10 @@
+{
+  "version": "8fa142ae7a7faf35b1422476617fa249297d3d00",
+  "commit": "8fa142ae7a7faf35b1422476617fa249297d3d00",
+  "updated_at": "2026-08-15T05:53:15Z",
+  "platforms": {
+    "linux-amd64": "8fa142ae7a7faf35b1422476617fa249297d3d00/linux-amd64",
+    "linux-arm64": "8fa142ae7a7faf35b1422476617fa249297d3d00/linux-arm64",
+    "windows-amd64": "8fa142ae7a7faf35b1422476617fa249297d3d00/windows-amd64"
+  }
+}
