@@ -1,4 +1,4 @@
-FROM --platform=$TARGETPLATFORM debian:bookworm
+FROM --platform=$TARGETPLATFORM golang:1.24-bookworm AS builder
 
 ARG CLEARLINK_VERSION=dev
 
@@ -6,7 +6,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && \
     apt-get install -y \
-        golang \
         gcc \
         g++ \
         make \
@@ -53,4 +52,4 @@ RUN chmod +x /out/broadcast /out/listen /out/server
 
 FROM scratch
 
-COPY --from=0 /out/ /
+COPY --from=builder /out/ /
