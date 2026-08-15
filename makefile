@@ -36,6 +36,7 @@ build-listen: ## Build only the listen binary
 
 build-server: ## Build only the server binary
 	@mkdir -p $(BINARY_DIR)
+	@$(GO) mod download
 	@$(GO) build -o $(BINARY_DIR)/server       ./cmd/server
 	@chmod +x $(BINARY_DIR)/server
 
