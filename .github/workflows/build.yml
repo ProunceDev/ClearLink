@@ -22,12 +22,12 @@ jobs:
 
     steps:
       - name: Checkout commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -65,9 +65,9 @@ jobs:
           sha256sum * > checksums.txt
 
       - name: Upload Windows artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
-          name: clearlink-windows-amd64-${{ steps.version.outputs.sha }}
+          name: clearlink-windows-amd64
           path: dist/
           retention-days: 30
 
@@ -82,7 +82,7 @@ jobs:
 
     steps:
       - name: Checkout commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
@@ -121,9 +121,9 @@ jobs:
           sha256sum * > checksums.txt
 
       - name: Upload Linux AMD64 artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
-          name: clearlink-linux-amd64-${{ steps.version.outputs.sha }}
+          name: clearlink-linux-amd64
           path: dist/
           retention-days: 30
 
@@ -138,7 +138,7 @@ jobs:
 
     steps:
       - name: Checkout commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
@@ -177,8 +177,8 @@ jobs:
           sha256sum * > checksums.txt
 
       - name: Upload Raspberry Pi artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
-          name: clearlink-linux-arm64-${{ steps.version.outputs.sha }}
+          name: clearlink-linux-arm64
           path: dist/
           retention-days: 30
