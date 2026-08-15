@@ -21,7 +21,8 @@ build: ## Build all binaries
 	@$(GO) build -o $(BINARY_DIR)/broadcast    ./cmd/broadcast
 	@$(GO) build -o $(BINARY_DIR)/listen       ./cmd/listen
 	@$(GO) build -o $(BINARY_DIR)/server       ./cmd/server
-	@chmod +x $(BINARY_DIR)/broadcast $(BINARY_DIR)/listen $(BINARY_DIR)/server
+	@$(GO) build -o $(BINARY_DIR)/clearlink    ./cmd/clearlink
+	@chmod +x $(BINARY_DIR)/broadcast $(BINARY_DIR)/listen $(BINARY_DIR)/server $(BINARY_DIR)/clearlink
 
 build-broadcast: ## Build only the broadcast binary
 	@mkdir -p $(BINARY_DIR)
@@ -38,7 +39,12 @@ build-server: ## Build only the server binary
 	@$(GO) build -o $(BINARY_DIR)/server       ./cmd/server
 	@chmod +x $(BINARY_DIR)/server
 
-.PHONY: run-broadcast run-listen run-server
+build-clearlink: ## Build only the clearlink binary
+	@mkdir -p $(BINARY_DIR)
+	@$(GO) build -o $(BINARY_DIR)/clearlink    ./cmd/clearlink
+	@chmod +x $(BINARY_DIR)/clearlink
+
+.PHONY: run-broadcast run-listen run-server run-clearlink
 run-broadcast: build-broadcast ## Build and run the broadcast binary
 	@$(BINARY_DIR)/broadcast $(ARGS)
 
@@ -48,3 +54,5 @@ run-listen: build-listen ## Build and run the listen binary
 run-server: build-server ## Build and run the server binary
 	@$(BINARY_DIR)/server $(ARGS)
 
+run-clearlink: build-clearlink ## Build and run the clearlink binary
+	@$(BINARY_DIR)/clearlink $(ARGS)
