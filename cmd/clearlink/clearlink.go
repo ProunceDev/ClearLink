@@ -13,8 +13,10 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -674,8 +676,13 @@ func latestURL() string {
 }
 
 func binaryURL(version string, platform string, binary string) string {
+	return artifactURL(version, platform, binary)
+}
+
+func artifactURL(version string, platform string, relativePath string) string {
 	extension := ""
-	if runtime.GOOS == "windows" {
+	cleanPath := normalizeRelativePath(relativePath)
+	if runtime.GOOS == "windows" && !strings.HasSuffix(cleanPath, ".exe") {
 		extension = ".exe"
 	}
 
@@ -686,7 +693,7 @@ func binaryURL(version string, platform string, binary string) string {
 		BuildBranch,
 		version,
 		platform,
-		binary,
+		cleanPath,
 		extension,
 	)
 }
@@ -826,7 +833,31 @@ func (m *Manager) installVersion(version string) error {
 		return fmt.Errorf("downloading checksums: %w", err)
 	}
 
-	if err := verifyChecksums(checksumPath, versionDir, binaries); err != nil {
+	checksumFiles, err := readChecksumFiles(checksumPath)
+	if err != nil {
+		return err
+	}
+
+	requiredFiles := requiredArtifactFiles(binaries, checksumFiles)
+
+	for _, relativePath := range requiredFiles {
+		info("Downloading %s", relativePath)
+
+		tempPath := filepath.Join(tempDir, filepath.FromSlash(relativePath))
+		url := artifactURL(version, platform, relativePath)
+
+		if err := downloadFile(url, tempPath); err != nil {
+			return fmt.Errorf("downloading %s: %w", relativePath, err)
+		}
+
+		if err := installFile(tempPath, filepath.Join(versionDir, filepath.FromSlash(relativePath))); err != nil {
+			return err
+		}
+
+		success("Downloaded %s", relativePath)
+	}
+
+	if err := verifyChecksums(checksumPath, versionDir, requiredFiles); err != nil {
 		return err
 	}
 
@@ -890,32 +921,18 @@ func installFile(source string, destination string) error {
 }
 
 func verifyChecksums(checksumFile string, directory string, requiredFiles []string) error {
-	data, err := os.ReadFile(checksumFile)
+	checksumFiles, err := readChecksumFiles(checksumFile)
 	if err != nil {
 		return err
 	}
 
-	checksums := make(map[string]string)
-
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			return fmt.Errorf("invalid checksum line: %q", line)
-		}
-
-		hash := strings.ToLower(fields[0])
-		filename := strings.TrimPrefix(fields[len(fields)-1], "*")
-		filename = filepath.Base(filename)
-		checksums[filename] = hash
+	checksums := make(map[string]string, len(checksumFiles))
+	for _, entry := range checksumFiles {
+		checksums[entry.Path] = entry.Hash
 	}
 
 	for _, filename := range requiredFiles {
-		filename = filepath.Base(filename)
+		filename = normalizeRelativePath(filename)
 
 		expected, ok := checksums[filename]
 		if !ok {
@@ -936,6 +953,82 @@ func verifyChecksums(checksumFile string, directory string, requiredFiles []stri
 	}
 
 	return nil
+}
+
+type checksumEntry struct {
+	Path string
+	Hash string
+}
+
+func readChecksumFiles(checksumFile string) ([]checksumEntry, error) {
+	data, err := os.ReadFile(checksumFile)
+	if err != nil {
+		return nil, err
+	}
+
+	entries := make([]checksumEntry, 0)
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			return nil, fmt.Errorf("invalid checksum line: %q", line)
+		}
+
+		entries = append(entries, checksumEntry{
+			Path: normalizeRelativePath(strings.TrimPrefix(fields[len(fields)-1], "*")),
+			Hash: strings.ToLower(fields[0]),
+		})
+	}
+
+	return entries, nil
+}
+
+func normalizeRelativePath(value string) string {
+	clean := path.Clean(strings.TrimSpace(value))
+	clean = strings.TrimPrefix(clean, "./")
+	if clean == "." {
+		return ""
+	}
+
+	return clean
+}
+
+func requiredArtifactFiles(binaries []string, checksumFiles []checksumEntry) []string {
+	required := make(map[string]struct{})
+	needsLibraries := false
+
+	for _, binary := range binaries {
+		binaryName := normalizeRelativePath(executableName(binary))
+		required[binaryName] = struct{}{}
+
+		if binary == "broadcast" || binary == "listen" {
+			needsLibraries = true
+		}
+	}
+
+	if needsLibraries {
+		for _, entry := range checksumFiles {
+			if strings.HasPrefix(entry.Path, "lib/") {
+				required[entry.Path] = struct{}{}
+			}
+		}
+	}
+
+	files := make([]string, 0, len(required))
+	for filename := range required {
+		if filename == "" {
+			continue
+		}
+
+		files = append(files, filename)
+	}
+
+	sort.Strings(files)
+	return files
 }
 
 func sha256File(path string) (string, error) {
@@ -1074,6 +1167,25 @@ func (m *Manager) startSingle(name string) error {
 	info("Starting %s", name)
 
 	cmd := exec.Command(path)
+	if runtime.GOOS == "linux" {
+		libDir := filepath.Join(filepath.Dir(path), "lib")
+		if fileExists(libDir) {
+			ldLibraryPath := libDir
+			if existing := os.Getenv("LD_LIBRARY_PATH"); existing != "" {
+				ldLibraryPath = ldLibraryPath + ":" + existing
+			}
+
+			env := make([]string, 0, len(os.Environ())+1)
+			for _, entry := range os.Environ() {
+				if strings.HasPrefix(entry, "LD_LIBRARY_PATH=") {
+					continue
+				}
+				env = append(env, entry)
+			}
+			env = append(env, "LD_LIBRARY_PATH="+ldLibraryPath)
+			cmd.Env = env
+		}
+	}
 	cmd.Dir = m.baseDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -1208,6 +1320,10 @@ func downloadFile(url string, destination string) error {
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download failed: %s", resp.Status)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(destination), 0755); err != nil {
+		return err
 	}
 
 	file, err := os.Create(destination)
