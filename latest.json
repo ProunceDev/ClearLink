@@ -1,10 +1,10 @@
 {
-  "version": "0074b9da5f9419b0a8221c871eac78eee8abce84",
-  "commit": "0074b9da5f9419b0a8221c871eac78eee8abce84",
-  "updated_at": "2026-08-15T06:43:59Z",
+  "version": "10ad050f75a19ad2e9ccdd884d006a2128b8949e",
+  "commit": "10ad050f75a19ad2e9ccdd884d006a2128b8949e",
+  "updated_at": "2026-08-15T06:56:24Z",
   "platforms": {
-    "linux-amd64": "0074b9da5f9419b0a8221c871eac78eee8abce84/linux-amd64",
-    "linux-arm64": "0074b9da5f9419b0a8221c871eac78eee8abce84/linux-arm64",
-    "windows-amd64": "0074b9da5f9419b0a8221c871eac78eee8abce84/windows-amd64"
+    "linux-amd64": "10ad050f75a19ad2e9ccdd884d006a2128b8949e/linux-amd64",
+    "linux-arm64": "10ad050f75a19ad2e9ccdd884d006a2128b8949e/linux-arm64",
+    "windows-amd64": "10ad050f75a19ad2e9ccdd884d006a2128b8949e/windows-amd64"
   }
 }
