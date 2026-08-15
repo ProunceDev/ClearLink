@@ -51,13 +51,13 @@ jobs:
 
           CGO_ENABLED=1 go build \
             -trimpath \
-            -ldflags="-s -w -X version.Version=${CLEARLINK_VERSION}" \
+            -ldflags="-s -w -X version.Version=${CLEARLINK_VERSION} -extldflags=-Wl,-rpath,\$ORIGIN/lib" \
             -o output/broadcast \
             ./cmd/broadcast
 
           CGO_ENABLED=1 go build \
             -trimpath \
-            -ldflags="-s -w -X version.Version=${CLEARLINK_VERSION}" \
+            -ldflags="-s -w -X version.Version=${CLEARLINK_VERSION} -extldflags=-Wl,-rpath,\$ORIGIN/lib" \
             -o output/listen \
             ./cmd/listen
 
@@ -166,13 +166,13 @@ jobs:
 
           CGO_ENABLED=1 go build \
             -trimpath \
-            -ldflags="-s -w -X version.Version=${CLEARLINK_VERSION}" \
+            -ldflags="-s -w -X version.Version=${CLEARLINK_VERSION} -extldflags=-Wl,-rpath,\$ORIGIN/lib" \
             -o output/broadcast \
             ./cmd/broadcast
 
           CGO_ENABLED=1 go build \
             -trimpath \
-            -ldflags="-s -w -X version.Version=${CLEARLINK_VERSION}" \
+            -ldflags="-s -w -X version.Version=${CLEARLINK_VERSION} -extldflags=-Wl,-rpath,\$ORIGIN/lib" \
             -o output/listen \
             ./cmd/listen
 
