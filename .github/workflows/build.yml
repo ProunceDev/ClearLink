@@ -201,45 +201,60 @@ jobs:
         uses: actions/download-artifact@v5
         with:
           name: clearlink-linux-amd64
-          path: publish/linux-amd64
+          path: /tmp/clearlink/linux-amd64
 
       - name: Download Linux ARM64
         uses: actions/download-artifact@v5
         with:
           name: clearlink-linux-arm64
-          path: publish/linux-arm64
+          path: /tmp/clearlink/linux-arm64
 
       - name: Download Windows AMD64
         uses: actions/download-artifact@v5
         with:
           name: clearlink-windows-amd64
-          path: publish/windows-amd64
+          path: /tmp/clearlink/windows-amd64
 
-      - name: Prepare build files
-        env:
-          SHA: ${{ github.sha }}
+      - name: Show downloaded artifacts
         run: |
-          mkdir -p publish-build/$SHA
+          echo "=== Linux AMD64 ==="
+          find /tmp/clearlink/linux-amd64 -type f -print
 
-          cp -r publish/linux-amd64 \
-            publish-build/$SHA/
+          echo "=== Linux ARM64 ==="
+          find /tmp/clearlink/linux-arm64 -type f -print
 
-          cp -r publish/linux-arm64 \
-            publish-build/$SHA/
-
-          cp -r publish/windows-amd64 \
-            publish-build/$SHA/
+          echo "=== Windows AMD64 ==="
+          find /tmp/clearlink/windows-amd64 -type f -print
 
       - name: Switch to builds branch
         run: |
           git fetch origin builds
-
           git checkout -B builds origin/builds
 
-      - name: Create latest.json
+      - name: Publish build
         env:
           SHA: ${{ github.sha }}
         run: |
+          set -e
+
+          echo "Publishing build:"
+          echo "$SHA"
+
+          mkdir -p "$SHA"
+
+          mkdir -p "$SHA/linux-amd64"
+          mkdir -p "$SHA/linux-arm64"
+          mkdir -p "$SHA/windows-amd64"
+
+          cp -r /tmp/clearlink/linux-amd64/. \
+            "$SHA/linux-amd64/"
+
+          cp -r /tmp/clearlink/linux-arm64/. \
+            "$SHA/linux-arm64/"
+
+          cp -r /tmp/clearlink/windows-amd64/. \
+            "$SHA/windows-amd64/"
+
           cat > latest.json <<EOF
           {
             "version": "$SHA",
@@ -253,20 +268,10 @@ jobs:
           }
           EOF
 
-      - name: Publish build
-        env:
-          SHA: ${{ github.sha }}
-        run: |
-          mkdir -p "$SHA"
-
-          cp -r ../publish-build/"$SHA"/linux-amd64 \
-            "$SHA/"
-
-          cp -r ../publish-build/"$SHA"/linux-arm64 \
-            "$SHA/"
-
-          cp -r ../publish-build/"$SHA"/windows-amd64 \
-            "$SHA/"
+          echo "=== Files being published ==="
+          find "$SHA" -type f -print
+          echo
+          cat latest.json
 
           git add "$SHA" latest.json
 
