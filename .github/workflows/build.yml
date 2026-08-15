@@ -192,7 +192,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@v6
         with:
           fetch-depth: 1
@@ -215,7 +215,28 @@ jobs:
           name: clearlink-windows-amd64
           path: publish/windows-amd64
 
-      - name: Create metadata
+      - name: Prepare build files
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          mkdir -p publish-build/$SHA
+
+          cp -r publish/linux-amd64 \
+            publish-build/$SHA/
+
+          cp -r publish/linux-arm64 \
+            publish-build/$SHA/
+
+          cp -r publish/windows-amd64 \
+            publish-build/$SHA/
+
+      - name: Switch to builds branch
+        run: |
+          git fetch origin builds
+
+          git checkout -B builds origin/builds
+
+      - name: Create latest.json
         env:
           SHA: ${{ github.sha }}
         run: |
@@ -232,36 +253,24 @@ jobs:
           }
           EOF
 
-          cp latest.json publish/latest.json
-
-      - name: Publish to builds branch
+      - name: Publish build
         env:
           SHA: ${{ github.sha }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git fetch origin builds || true
-
-          if git show-ref --verify --quiet refs/remotes/origin/builds; then
-            git checkout -B builds origin/builds
-          else
-            git checkout --orphan builds
-            git rm -rf . || true
-          fi
-
-          # Remove everything except previous builds.
-          # Each commit remains available for rollback.
           mkdir -p "$SHA"
 
-          cp -r publish/linux-amd64 "$SHA/"
-          cp -r publish/linux-arm64 "$SHA/"
-          cp -r publish/windows-amd64 "$SHA/"
+          cp -r ../publish-build/"$SHA"/linux-amd64 \
+            "$SHA/"
 
-          cp publish/latest.json latest.json
+          cp -r ../publish-build/"$SHA"/linux-arm64 \
+            "$SHA/"
+
+          cp -r ../publish-build/"$SHA"/windows-amd64 \
+            "$SHA/"
 
           git add "$SHA" latest.json
 
-          git commit -m "Build $SHA"
+          git commit \
+            -m "Build $SHA"
 
           git push origin builds
