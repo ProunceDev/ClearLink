@@ -1,0 +1,186 @@
+name: Build ClearLink
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+
+  # ============================================================
+  # Windows AMD64
+  # Only the server is supported on Windows.
+  # ============================================================
+
+  windows:
+    name: Windows AMD64
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Get commit information
+        id: version
+        shell: bash
+        run: |
+          echo "sha=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$(echo '${{ github.event.pull_request.head.sha }}' | cut -c1-8)" >> "$GITHUB_OUTPUT"
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build server
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+          VERSION: ${{ steps.version.outputs.sha }}
+        shell: bash
+        run: |
+          mkdir -p dist
+
+          go build \
+            -trimpath \
+            -ldflags="-s -w -X version.Version=${VERSION}" \
+            -o "dist/clearlink-server-windows-amd64.exe" \
+            ./cmd/server
+
+      - name: Generate checksum
+        shell: bash
+        run: |
+          cd dist
+          sha256sum * > checksums.txt
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clearlink-windows-amd64-${{ steps.version.outputs.sha }}
+          path: dist/
+          retention-days: 30
+
+
+  # ============================================================
+  # Linux AMD64
+  # ============================================================
+
+  linux-amd64:
+    name: Linux AMD64
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Get commit information
+        id: version
+        run: |
+          echo "sha=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$(echo '${{ github.event.pull_request.head.sha }}' | cut -c1-8)" >> "$GITHUB_OUTPUT"
+
+      - name: Build Linux AMD64
+        env:
+          CLEARLINK_VERSION: ${{ steps.version.outputs.sha }}
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --build-arg CLEARLINK_VERSION="${CLEARLINK_VERSION}" \
+            --file build/Dockerfile \
+            --output type=local,dest=dist \
+            .
+
+      - name: Rename binaries
+        run: |
+          mv dist/broadcast dist/clearlink-broadcast-linux-amd64
+          mv dist/listen dist/clearlink-listen-linux-amd64
+          mv dist/server dist/clearlink-server-linux-amd64
+
+      - name: Generate checksum
+        run: |
+          cd dist
+          sha256sum * > checksums.txt
+
+      - name: Upload Linux AMD64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clearlink-linux-amd64-${{ steps.version.outputs.sha }}
+          path: dist/
+          retention-days: 30
+
+
+  # ============================================================
+  # Raspberry Pi 5 ARM64
+  # ============================================================
+
+  linux-arm64:
+    name: Raspberry Pi 5 ARM64
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Get commit information
+        id: version
+        run: |
+          echo "sha=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$(echo '${{ github.event.pull_request.head.sha }}' | cut -c1-8)" >> "$GITHUB_OUTPUT"
+
+      - name: Build Raspberry Pi ARM64
+        env:
+          CLEARLINK_VERSION: ${{ steps.version.outputs.sha }}
+        run: |
+          docker buildx build \
+            --platform linux/arm64 \
+            --build-arg CLEARLINK_VERSION="${CLEARLINK_VERSION}" \
+            --file build/Dockerfile \
+            --output type=local,dest=dist \
+            .
+
+      - name: Rename binaries
+        run: |
+          mv dist/broadcast dist/clearlink-broadcast-linux-arm64
+          mv dist/listen dist/clearlink-listen-linux-arm64
+          mv dist/server dist/clearlink-server-linux-arm64
+
+      - name: Generate checksum
+        run: |
+          cd dist
+          sha256sum * > checksums.txt
+
+      - name: Upload Raspberry Pi artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clearlink-linux-arm64-${{ steps.version.outputs.sha }}
+          path: dist/
+          retention-days: 30
