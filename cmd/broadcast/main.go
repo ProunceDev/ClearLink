@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -20,6 +21,14 @@ var (
 	discordPlayer *DiscordPlayer
 	radioPlayer   *RadioPlayer
 )
+
+func scheduleRestartAfterConfigUpdate() {
+	go func() {
+		time.Sleep(5 * time.Second)
+		fmt.Println("Config update received from server. Restarting in 5s.")
+		os.Exit(0)
+	}()
+}
 
 func main() {
 	fmt.Println("Starting broadcast client. Press Ctrl+C to shutdown.")
@@ -271,6 +280,7 @@ func receiveLoop() {
 				}
 				config.UpdateConfigValue(updatePkt.Entry)
 				fmt.Printf("Updated config entry from server: %s:%s = %v\n", string(updatePkt.Entry.Type), updatePkt.Entry.Key, updatePkt.Entry.Var.Data)
+				scheduleRestartAfterConfigUpdate()
 
 				init := &network.ToServerConfigPacket{Config: *config.Config}
 				initPayload, _ := init.Marshal()
