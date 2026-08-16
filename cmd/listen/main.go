@@ -144,6 +144,10 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
+	if err := installRTLSDRRules(); err != nil {
+		log.Printf("Warning: RTL-SDR udev rules were not installed automatically.\n%v", err)
+	}
+
 	// Resolve server address
 	serverAddrStr := fmt.Sprintf("%s:%d", config.GetConfigValue("ServerAddr", models.ApplicationTypeListen), config.GetConfigValue("ServerPort", models.ApplicationTypeListen))
 	serverPeer.RemoteAddr, err = net.ResolveUDPAddr("udp", serverAddrStr)
