@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"time"
 
 	rtlsdr "github.com/jpoirier/gortlsdr"
 )
@@ -67,9 +68,51 @@ func SdrLoop(ctx context.Context, dataChan chan<- SDRData) {
 	audioCutoffHz := float64(config.GetConfigValue("AudioCutoffHz", models.ApplicationTypeListen).(int))
 	deemphasisTauUs := config.GetConfigValue("DeemphasisTauUs", models.ApplicationTypeListen).(int)
 	tunerBandwidth := config.GetConfigValue("TunerBandwidth", models.ApplicationTypeListen).(int)
+	tunerGain := config.GetConfigValue("TunerGain", models.ApplicationTypeListen).(int)
 	aaFilterTaps := config.GetConfigValue("AAFilterTaps", models.ApplicationTypeListen).(int)
 
+	if sampleRate%audioRate != 0 {
+		config.UpdateConfigValue(models.ConfigEntry{
+			Key:  "AudioRate",
+			Type: models.ApplicationTypeListen,
+			Var: models.EntryVar{
+				Type: models.EntryTypeInt,
+				Data: 48000,
+			},
+			Default: models.EntryVar{
+				Type: models.EntryTypeInt,
+				Data: 48000,
+			},
+		})
+		config.UpdateConfigValue(models.ConfigEntry{
+			Key:  "SampleRate",
+			Type: models.ApplicationTypeListen,
+			Var: models.EntryVar{
+				Type: models.EntryTypeInt,
+				Data: 960000,
+			},
+			Default: models.EntryVar{
+				Type: models.EntryTypeInt,
+				Data: 960000,
+			},
+		})
+		print(fmt.Sprintf(
+			"invalid SDR sample rate: %d is not evenly divisible by audio rate %d; "+
+				"reset to 960000 : 48000",
+			sampleRate,
+			audioRate,
+		))
+	}
+
 	decimation := sampleRate / audioRate
+
+	if decimation < 1 {
+		panic(fmt.Sprintf(
+			"invalid decimation ratio: %d",
+			decimation,
+		))
+	}
+
 	chunkSamples := audioRate * audioChunkMs / 1000
 	deemphasisTau := float64(deemphasisTauUs) * 1e-6
 
@@ -84,7 +127,7 @@ func SdrLoop(ctx context.Context, dataChan chan<- SDRData) {
 	dev.SetCenterFreq(frequency)
 	dev.SetSampleRate(sampleRate)
 	dev.SetTunerGainMode(true)
-	dev.SetTunerGain(120)
+	dev.SetTunerGain(tunerGain)
 	dev.SetTunerBw(tunerBandwidth)
 	dev.ResetBuffer()
 
@@ -97,6 +140,9 @@ func SdrLoop(ctx context.Context, dataChan chan<- SDRData) {
 	lpFilter2 := newLowpassBiquad(audioCutoffHz, float64(audioRate), 1.3065)
 
 	buf := make([]uint8, bufferSize)
+
+	var phaseReal float64
+	var phaseImag float64
 	var prev complex64
 	var deemph float64
 
@@ -111,6 +157,10 @@ func SdrLoop(ctx context.Context, dataChan chan<- SDRData) {
 	audioChunk := make([]int16, 0, chunkSamples)
 	chunkPowerSum := 0.0
 	chunkPowerSamples := 0
+
+	bufferIQSamples := bufferSize / 2
+
+	bufferDuration := time.Duration(float64(bufferIQSamples) / float64(sampleRate) * float64(time.Second))
 
 	for {
 		select {
@@ -129,79 +179,191 @@ func SdrLoop(ctx context.Context, dataChan chan<- SDRData) {
 
 		powerSum = 0.0
 		powerSamples = 0
+		if RaspberryPiGeneration() != "pi3" { // Use atan2() for FM demodulation on Pi 4 and newer ( Sounds better but uses much more CPU)
+			for i := 0; i < n; i += 2 {
+				iqI := (float32(buf[i]) - 127.5) / 127.5
+				iqQ := (float32(buf[i+1]) - 127.5) / 127.5
 
-		for i := 0; i < n; i += 2 {
-			iqI := (float32(buf[i]) - 127.5) / 127.5
-			iqQ := (float32(buf[i+1]) - 127.5) / 127.5
+				curr := complex(iqI, iqQ)
 
-			curr := complex(iqI, iqQ)
+				power := float64(iqI*iqI + iqQ*iqQ)
+				powerSum += power
+				powerSamples++
 
-			power := float64(iqI*iqI + iqQ*iqQ)
-			powerSum += power
-			powerSamples++
+				v := curr * complex(real(prev), -imag(prev))
+				audioVal := math.Atan2(float64(imag(v)), float64(real(v)))
 
-			v := curr * complex(real(prev), -imag(prev))
-			audioVal := math.Atan2(float64(imag(v)), float64(real(v)))
+				prev = curr
 
-			prev = curr
+				aaSum -= aaBuffer[aaIndex]
+				aaBuffer[aaIndex] = audioVal
+				aaSum += audioVal
+				aaIndex = (aaIndex + 1) % aaFilterTaps
 
-			aaSum -= aaBuffer[aaIndex]
-			aaBuffer[aaIndex] = audioVal
-			aaSum += audioVal
-			aaIndex = (aaIndex + 1) % aaFilterTaps
+				audioFiltered := aaSum / float64(aaFilterTaps)
 
-			audioFiltered := aaSum / float64(aaFilterTaps)
+				audioAccumulator += audioFiltered
+				sampleCount++
 
-			audioAccumulator += audioFiltered
-			sampleCount++
+				if sampleCount >= decimation {
+					audioSample := audioAccumulator / float64(sampleCount)
+					audioSample *= demodScale
 
-			if sampleCount >= decimation {
-				audioSample := audioAccumulator / float64(sampleCount)
-				audioSample *= demodScale
+					audioAccumulator = 0
+					sampleCount = 0
 
-				audioAccumulator = 0
-				sampleCount = 0
+					deemph = deemph*deemphAlpha + audioSample*(1-deemphAlpha)
+					audioSample = deemph
 
-				deemph = deemph*deemphAlpha + audioSample*(1-deemphAlpha)
-				audioSample = deemph
+					audioSample = lpFilter1.process(audioSample)
+					audioSample = lpFilter2.process(audioSample)
 
-				audioSample = lpFilter1.process(audioSample)
-				audioSample = lpFilter2.process(audioSample)
-
-				sample := int(audioSample * float64(audioGain))
-				if sample > 32767 {
-					sample = 32767
-				} else if sample < -32768 {
-					sample = -32768
-				}
-
-				audioChunk = append(audioChunk, int16(sample))
-				chunkPowerSum += powerSum
-				chunkPowerSamples += powerSamples
-
-				if len(audioChunk) >= chunkSamples {
-					rssi := 0.0
-					if chunkPowerSamples > 0 {
-						rssi = 10 * math.Log10(chunkPowerSum/float64(chunkPowerSamples))
+					sample := int(audioSample * float64(audioGain))
+					if sample > 32767 {
+						sample = 32767
+					} else if sample < -32768 {
+						sample = -32768
 					}
 
-					chunk := make([]int16, len(audioChunk))
-					copy(chunk, audioChunk)
+					audioChunk = append(audioChunk, int16(sample))
+					chunkPowerSum += powerSum
+					chunkPowerSamples += powerSamples
 
-					select {
-					case dataChan <- SDRData{
-						RSSI:       rssi,
-						SampleRate: audioRate,
-						AudioChunk: chunk,
-					}:
-					default:
-						// Keep latency bounded by dropping chunks when the consumer falls behind.
+					if len(audioChunk) >= chunkSamples {
+						rssi := 0.0
+						if chunkPowerSamples > 0 {
+							rssi = 10 * math.Log10(chunkPowerSum/float64(chunkPowerSamples))
+						}
+
+						chunk := make([]int16, len(audioChunk))
+						copy(chunk, audioChunk)
+
+						select {
+						case dataChan <- SDRData{
+							RSSI:       rssi,
+							SampleRate: audioRate,
+							AudioChunk: chunk,
+						}:
+						default:
+							// Keep latency bounded by dropping chunks when the consumer falls behind.
+						}
+
+						audioChunk = audioChunk[:0]
+						chunkPowerSum = 0.0
+						chunkPowerSamples = 0
+					}
+				}
+			}
+		} else { // Use imag(v) for FM demodulation on Pi 3 ( Uses less CPU but sounds worse )
+			processStart := time.Now()
+
+			for i := 0; i+1 < n; i += 2 {
+				// Convert unsigned RTL-SDR IQ to normalized [-1, 1].
+				iqI := (float32(buf[i]) - 127.5) / 127.5
+				iqQ := (float32(buf[i+1]) - 127.5) / 127.5
+
+				curr := complex(iqI, iqQ)
+
+				// ---------------------------------------------------------
+				// RF power measurement
+				// ---------------------------------------------------------
+
+				power := float64(iqI*iqI + iqQ*iqQ)
+
+				chunkPowerSum += power
+				chunkPowerSamples++
+
+				// FM discriminator.
+				// For narrowband FM, the phase difference between adjacent IQ
+				// samples is small, so imag(v) is an excellent approximation of
+				// the instantaneous phase difference.
+				//
+				// This avoids an atan2() call for every IQ sample.
+				if sampleCount > 0 {
+					v := complex128(curr) * complex128(complex(
+						real(prev),
+						-imag(prev),
+					))
+
+					phaseReal += real(v)
+					phaseImag += imag(v)
+				}
+
+				prev = curr
+				sampleCount++
+
+				if sampleCount >= decimation {
+					// Average the phase-difference vectors.
+					phaseReal /= float64(sampleCount)
+					phaseImag /= float64(sampleCount)
+
+					// One atan2() per audio sample.
+					audioVal := math.Atan2(phaseImag, phaseReal)
+
+					// Convert phase change to normalized FM deviation.
+					audioVal *= demodScale
+
+					phaseReal = 0
+					phaseImag = 0
+					sampleCount = 0
+
+					// De-emphasis
+					deemph = deemph*deemphAlpha +
+						audioVal*(1.0-deemphAlpha)
+
+					audioVal = deemph
+
+					// Audio filtering
+					audioVal = lpFilter1.process(audioVal)
+					audioVal = lpFilter2.process(audioVal)
+
+					// Gain
+					sample := int(audioVal * float64(audioGain))
+
+					if sample > 32767 {
+						sample = 32767
+					} else if sample < -32768 {
+						sample = -32768
 					}
 
-					audioChunk = audioChunk[:0]
-					chunkPowerSum = 0.0
-					chunkPowerSamples = 0
+					audioChunk = append(audioChunk, int16(sample))
+
+					// Emit complete audio chunk
+					if len(audioChunk) >= chunkSamples {
+						rssi := -100.0
+
+						if chunkPowerSamples > 0 {
+							meanPower := chunkPowerSum /
+								float64(chunkPowerSamples)
+
+							if meanPower > 0 {
+								rssi = 10 * math.Log10(meanPower)
+							}
+						}
+
+						chunk := make([]int16, len(audioChunk))
+						copy(chunk, audioChunk)
+
+						select {
+						case dataChan <- SDRData{
+							RSSI:       rssi,
+							SampleRate: audioRate,
+							AudioChunk: chunk,
+						}:
+						default:
+						}
+
+						audioChunk = audioChunk[:0]
+						chunkPowerSum = 0
+						chunkPowerSamples = 0
+					}
 				}
+			}
+
+			processDuration := time.Since(processStart)
+
+			if processDuration > bufferDuration {
+				fmt.Printf("[SDR WARNING] Processing is falling behind the SDR stream!\n")
 			}
 		}
 	}

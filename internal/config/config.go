@@ -37,7 +37,7 @@ var ConfigEntries = []models.ConfigEntry{
 	{Key: "NodeName", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeString, Data: "DefaultNodeName"}},
 	{Key: "SquelchDB", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: -15}},
 	{Key: "Frequency", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 146520000}},
-	{Key: "SampleRate", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 1024000}},
+	{Key: "SampleRate", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 960000}},
 	{Key: "AudioRate", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 48000}},
 	{Key: "AudioChunkMs", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 20}},
 	{Key: "BufferSize", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 16384}},
@@ -46,6 +46,7 @@ var ConfigEntries = []models.ConfigEntry{
 	{Key: "AudioCutoffHz", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 3000}},
 	{Key: "DeemphasisTauUs", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 90}},
 	{Key: "TunerBandwidth", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 15000}},
+	{Key: "TunerGain", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 240}},
 	{Key: "AAFilterTaps", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 8}},
 }
 
