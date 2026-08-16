@@ -74,7 +74,7 @@ func main() {
 
 	go heartbeatLoop()
 	go audioRouterLoop()
-	startWebServer()
+	go startWebServer()
 
 	networkLoop()
 }
