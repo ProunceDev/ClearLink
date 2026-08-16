@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/maxence-charriere/go-app/v11/pkg/app"
 )
@@ -49,6 +50,24 @@ func currentNodes() []NodeStatus {
 	return getNodes()
 }
 
+const autoRefreshInterval = 150 * time.Millisecond
+
+func autoRefreshScript() app.UI {
+	return app.Script().Type("text/javascript").Text(fmt.Sprintf(`
+		(function() {
+			if (window.__clearlinkAutoRefresh) {
+				return;
+			}
+			window.__clearlinkAutoRefresh = true;
+			setInterval(function() {
+				if (document.visibilityState === "visible") {
+					window.location.reload();
+				}
+			}, %d);
+		})();
+	`, autoRefreshInterval.Milliseconds()))
+}
+
 type homePage struct {
 	app.Compo
 }
@@ -60,11 +79,12 @@ func (p *homePage) Render() app.UI {
 
 	return app.Div().Body(
 		panelStyles(),
+		autoRefreshScript(),
 		app.Div().Class("top").Body(
 			app.A().Class("admin-btn").Href("/admin").Text("Admin Panel"),
 		),
 		app.H1().Text("ClearLink"),
-		app.P().Class("subtle").Text("Reload the page for latest topology."),
+		app.P().Class("subtle").Text("Live topology of connected nodes and links."),
 		homeSection("Listen Nodes", topology.Listen, true),
 		homeSection("Server", []publicNode{{Name: "Server"}}, false),
 		homeSection("Broadcast Nodes", topology.Broadcast, false),
@@ -161,6 +181,7 @@ func (p *adminPage) Render() app.UI {
 
 	return app.Div().Body(
 		panelStyles(),
+		autoRefreshScript(),
 		app.Div().Class("top").Body(
 			app.H1().Text("Admin Panel"),
 			app.Div().Class("top-actions").Body(
@@ -170,7 +191,7 @@ func (p *adminPage) Render() app.UI {
 				),
 			),
 		),
-		app.P().Class("subtle").Text("Edits post directly to the server. Reload to get fresh status."),
+		app.P().Class("subtle").Text("Auto-refreshing every 5 seconds so disconnects and node changes show up immediately."),
 		app.Div().Body(cards...),
 	)
 }
