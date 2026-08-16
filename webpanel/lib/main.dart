@@ -42,18 +42,17 @@ class DashboardPage extends StatefulWidget {
 }
 
 class _DashboardPageState extends State<DashboardPage> {
-  late Future<_DashboardData> _dashboardFuture;
+  _DashboardData? _dashboardData;
+  String? _errorMessage;
+  bool _isLoading = true;
   Timer? _refreshTimer;
 
   @override
   void initState() {
     super.initState();
-    _dashboardFuture = _loadDashboard();
+    _loadDashboard();
     _refreshTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
-      if (!mounted) return;
-      setState(() {
-        _dashboardFuture = _loadDashboard();
-      });
+      _refreshDashboard();
     });
   }
 
@@ -63,7 +62,39 @@ class _DashboardPageState extends State<DashboardPage> {
     super.dispose();
   }
 
-  Future<_DashboardData> _loadDashboard() async {
+  Future<void> _loadDashboard() async {
+    try {
+      final data = await _fetchDashboardData();
+      if (!mounted) return;
+      setState(() {
+        _dashboardData = data;
+        _errorMessage = null;
+        _isLoading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = error.toString();
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _refreshDashboard() async {
+    if (!mounted) return;
+    try {
+      final data = await _fetchDashboardData();
+      if (!mounted) return;
+      setState(() {
+        _dashboardData = data;
+        _errorMessage = null;
+      });
+    } catch (_) {
+      // Ignore transient polling failures so the dashboard stays live without flicker.
+    }
+  }
+
+  Future<_DashboardData> _fetchDashboardData() async {
     if (widget.initialTopology != null) {
       return _DashboardData(topology: widget.initialTopology!, connections: const []);
     }
@@ -108,81 +139,79 @@ class _DashboardPageState extends State<DashboardPage> {
           ),
         ),
         child: SafeArea(
-          child: FutureBuilder<_DashboardData>(
-            future: _dashboardFuture,
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
-              }
+          child: () {
+            if (_isLoading && _dashboardData == null) {
+              return const Center(child: CircularProgressIndicator());
+            }
 
-              if (snapshot.hasError) {
-                return Center(
-                  child: Card(
-                    color: const Color(0xFF1C2435),
-                    child: Padding(
-                      padding: const EdgeInsets.all(24),
-                      child: Text('Unable to load dashboard\n${snapshot.error}', textAlign: TextAlign.center),
-                    ),
+            if (_errorMessage != null && _dashboardData == null) {
+              return Center(
+                child: Card(
+                  color: const Color(0xFF1C2435),
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text('Unable to load dashboard\n$_errorMessage', textAlign: TextAlign.center),
                   ),
-                );
-              }
-
-              final data = snapshot.data ??
-                  _DashboardData(
-                    topology: TopologyResponse.empty(),
-                    connections: const [],
-                  );
-              return Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            'Dashboard',
-                            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                              fontWeight: FontWeight.w700,
-                              color: Colors.white,
-                              letterSpacing: 0.5,
-                            ),
-                          ),
-                        ),
-                        _MetricBadge(label: 'Listen', value: '${data.topology.listen.length}'),
-                        const SizedBox(width: 12),
-                        _MetricBadge(label: 'Broadcast', value: '${data.topology.broadcast.length}'),
-                        const SizedBox(width: 12),
-                        _MetricBadge(label: 'Active', value: '${_countActive(data.topology)}'),
-                        const SizedBox(width: 12),
-                        IconButton(
-                          onPressed: () => _showAdminPanel(context),
-                          tooltip: 'Admin panel',
-                          style: IconButton.styleFrom(
-                            backgroundColor: const Color(0xFF111B2B),
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                            padding: const EdgeInsets.all(12),
-                          ),
-                          icon: const Icon(Icons.settings_outlined),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 24),
-                    Expanded(
-                      child: TopologyDiagram(
-                        topology: data.topology,
-                        connections: data.connections,
-                      ),
-                    ),
-                  ],
                 ),
               );
-            },
-          ),
+            }
+
+            final data = _dashboardData ??
+                _DashboardData(
+                  topology: TopologyResponse.empty(),
+                  connections: const [],
+                );
+
+            return Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Dashboard',
+                          style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                      _MetricBadge(label: 'Listen', value: '${data.topology.listen.length}'),
+                      const SizedBox(width: 12),
+                      _MetricBadge(label: 'Broadcast', value: '${data.topology.broadcast.length}'),
+                      const SizedBox(width: 12),
+                      _MetricBadge(label: 'Active', value: '${_countActive(data.topology)}'),
+                      const SizedBox(width: 12),
+                      IconButton(
+                        onPressed: () => _showAdminPanel(context),
+                        tooltip: 'Admin panel',
+                        style: IconButton.styleFrom(
+                          backgroundColor: const Color(0xFF111B2B),
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          padding: const EdgeInsets.all(12),
+                        ),
+                        icon: const Icon(Icons.settings_outlined),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+                  Expanded(
+                    child: TopologyDiagram(
+                      topology: data.topology,
+                      connections: data.connections,
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }(),
         ),
       ),
     );
@@ -399,7 +428,6 @@ class TopologyDiagram extends StatelessWidget {
                     listenNodes: topology.listen,
                     server: topology.server,
                     broadcastNodes: topology.broadcast,
-                    connections: connections,
                     listenRowTop: listenRowTop,
                     serverRowTop: serverRowTop,
                     broadcastRowTop: broadcastRowTop,
@@ -479,7 +507,6 @@ class TopologyPainter extends CustomPainter {
   final List<PublicNode> listenNodes;
   final PublicNode server;
   final List<PublicNode> broadcastNodes;
-  final List<TopologyConnection> connections;
   final double listenRowTop;
   final double serverRowTop;
   final double broadcastRowTop;
@@ -495,7 +522,6 @@ class TopologyPainter extends CustomPainter {
     required this.listenNodes,
     required this.server,
     required this.broadcastNodes,
-    required this.connections,
     required this.listenRowTop,
     required this.serverRowTop,
     required this.broadcastRowTop,
@@ -523,95 +549,43 @@ class TopologyPainter extends CustomPainter {
       ..strokeCap = StrokeCap.round
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2);
 
-    final listenByPeer = {
-      for (var i = 0; i < listenNodes.length; i++)
-        'peer-${listenNodes[i].peerId}': Offset(
-          listenStart + (i * (boxWidth + 18)) + (boxWidth / 2),
-          listenRowTop + boxHeight,
-        ),
-    };
-    final broadcastByPeer = {
-      for (var i = 0; i < broadcastNodes.length; i++)
-        'peer-${broadcastNodes[i].peerId}': Offset(
-          broadcastStart + (i * (boxWidth + 18)) + (boxWidth / 2),
-          broadcastRowTop,
-        ),
-    };
-    final serverPoint = Offset(serverX + (serverWidth / 2), serverRowTop + (serverHeight / 2));
-
-    for (final connection in connections) {
-      final from = connection.fromNodeId;
-      final to = connection.toNodeId;
-      Offset? start;
-      Offset? end;
-
-      if (from == 'server-node') {
-        start = serverPoint;
-        end = broadcastByPeer[to] ?? serverPoint;
-      } else if (to == 'server-node') {
-        start = listenByPeer[from] ?? serverPoint;
-        end = serverPoint;
-      } else {
-        start = listenByPeer[from] ?? broadcastByPeer[from] ?? serverPoint;
-        end = broadcastByPeer[to] ?? listenByPeer[to] ?? serverPoint;
-      }
-
+    for (var i = 0; i < listenNodes.length; i++) {
+      final node = listenNodes[i];
+      final start = Offset(listenStart + (i * (boxWidth + 18)) + (boxWidth / 2), listenRowTop + boxHeight);
+      final end = Offset(serverX + (serverWidth / 2), serverRowTop);
       final path = Path();
       path.moveTo(start.dx, start.dy);
       path.cubicTo(
         start.dx,
-        start.dy + (from == 'server-node' ? 44 : 46),
+        start.dy + 46,
         end.dx,
-        end.dy - (to == 'server-node' ? 46 : 44),
+        end.dy - 46,
         end.dx,
         end.dy,
       );
-
-      final color = connection.color == '#ef4444' || connection.color == '#FF4D4D' ? activePaint : mutedPaint;
-      canvas.drawPath(path, color);
+      canvas.drawPath(path, node.active ? activePaint : mutedPaint);
     }
 
-    if (connections.isEmpty) {
-      for (var i = 0; i < listenNodes.length; i++) {
-        final node = listenNodes[i];
-        final start = Offset(listenStart + (i * (boxWidth + 18)) + (boxWidth / 2), listenRowTop + boxHeight);
-        final end = Offset(serverX + (serverWidth / 2), serverRowTop);
-        final path = Path();
-        path.moveTo(start.dx, start.dy);
-        path.cubicTo(
-          start.dx,
-          start.dy + 46,
-          end.dx,
-          end.dy - 46,
-          end.dx,
-          end.dy,
-        );
-        canvas.drawPath(path, node.active ? activePaint : mutedPaint);
-      }
-
-      for (var i = 0; i < broadcastNodes.length; i++) {
-        final node = broadcastNodes[i];
-        final start = Offset(serverX + (serverWidth / 2), serverRowTop + serverHeight);
-        final end = Offset(broadcastStart + (i * (boxWidth + 18)) + (boxWidth / 2), broadcastRowTop);
-        final path = Path();
-        path.moveTo(start.dx, start.dy);
-        path.cubicTo(
-          start.dx,
-          start.dy + 44,
-          end.dx,
-          end.dy - 44,
-          end.dx,
-          end.dy,
-        );
-        canvas.drawPath(path, node.active ? activePaint : mutedPaint);
-      }
+    for (var i = 0; i < broadcastNodes.length; i++) {
+      final node = broadcastNodes[i];
+      final start = Offset(serverX + (serverWidth / 2), serverRowTop + serverHeight);
+      final end = Offset(broadcastStart + (i * (boxWidth + 18)) + (boxWidth / 2), broadcastRowTop);
+      final path = Path();
+      path.moveTo(start.dx, start.dy);
+      path.cubicTo(
+        start.dx,
+        start.dy + 44,
+        end.dx,
+        end.dy - 44,
+        end.dx,
+        end.dy,
+      );
+      canvas.drawPath(path, node.active ? activePaint : mutedPaint);
     }
   }
 
   @override
-  bool shouldRepaint(covariant TopologyPainter oldDelegate) {
-    return true;
-  }
+  bool shouldRepaint(covariant TopologyPainter oldDelegate) => true;
 }
 
 class _NodeCard extends StatelessWidget {

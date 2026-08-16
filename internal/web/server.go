@@ -283,6 +283,14 @@ func buildPublicTopology(nodes []NodeStatus) publicTopology {
 		Broadcast: make([]publicNode, 0),
 	}
 
+	var activeListenPeerID uint16
+	for _, node := range nodes {
+		if node.NodeType == "listen" && node.Active {
+			activeListenPeerID = node.PeerID
+			break
+		}
+	}
+
 	for _, node := range nodes {
 		name := strings.TrimSpace(node.Name)
 		if name == "" {
@@ -293,6 +301,11 @@ func buildPublicTopology(nodes []NodeStatus) publicTopology {
 		case "listen":
 			topology.Listen = append(topology.Listen, public)
 		case "broadcast":
+			if activeListenPeerID != 0 {
+				public.Active = node.Active
+			} else {
+				public.Active = false
+			}
 			topology.Broadcast = append(topology.Broadcast, public)
 		}
 	}
@@ -337,6 +350,10 @@ func buildPublicConnections(nodes []NodeStatus) publicConnectionsResponse {
 			EndOffsetY:   30,
 			DashArray:    "",
 		})
+	}
+
+	if activeListenPeerID == 0 {
+		return response
 	}
 
 	for _, node := range nodes {

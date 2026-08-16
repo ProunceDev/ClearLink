@@ -109,9 +109,6 @@ func getNodeStatuses() []web.NodeStatus {
 	nodes := make([]web.NodeStatus, 0, len(peers))
 	for _, peer := range peers {
 		active := peer.NodeType == models.ApplicationTypeListen && peer.PeerID == activeListenPeerID
-		if peer.NodeType == models.ApplicationTypeBroadcast {
-			active = true
-		}
 
 		node := web.NodeStatus{
 			PeerID:           peer.PeerID,
