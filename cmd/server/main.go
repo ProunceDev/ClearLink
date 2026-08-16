@@ -108,6 +108,11 @@ func getNodeStatuses() []web.NodeStatus {
 
 	nodes := make([]web.NodeStatus, 0, len(peers))
 	for _, peer := range peers {
+		active := peer.NodeType == models.ApplicationTypeListen && peer.PeerID == activeListenPeerID
+		if peer.NodeType == models.ApplicationTypeBroadcast {
+			active = true
+		}
+
 		node := web.NodeStatus{
 			PeerID:           peer.PeerID,
 			Name:             peer.Name,
@@ -115,7 +120,7 @@ func getNodeStatuses() []web.NodeStatus {
 			RemoteAddr:       peer.RemoteAddr.String(),
 			LastHeartbeat:    peer.LastHeartbeat.Format(time.RFC3339),
 			LastHeartbeatAgo: time.Since(peer.LastHeartbeat).Round(time.Second).String(),
-			Active:           peer.NodeType == models.ApplicationTypeListen && peer.PeerID == activeListenPeerID,
+			Active:           active,
 			Config:           make([]web.NodeConfig, 0, len(peer.Config.Entries)),
 		}
 		for _, entry := range peer.Config.Entries {

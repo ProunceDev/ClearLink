@@ -301,7 +301,7 @@ func buildPublicTopology(nodes []NodeStatus) publicTopology {
 }
 
 func buildPublicConnections(nodes []NodeStatus) publicConnectionsResponse {
-	response := publicConnectionsResponse{Connections: make([]publicConnection, 0, len(nodes))}
+	response := publicConnectionsResponse{Connections: make([]publicConnection, 0, len(nodes)*2)}
 
 	var activeListenPeerID uint16
 	for _, node := range nodes {
@@ -318,10 +318,10 @@ func buildPublicConnections(nodes []NodeStatus) publicConnectionsResponse {
 		color := "#6b7280"
 		if activeListenPeerID != 0 {
 			if node.NodeType == "listen" && node.PeerID == activeListenPeerID {
-				color = "#3b82f6"
+				color = "#ef4444"
 			}
-			if node.NodeType == "broadcast" {
-				color = "#3b82f6"
+			if node.NodeType == "broadcast" && node.Active {
+				color = "#ef4444"
 			}
 		}
 
@@ -335,6 +335,24 @@ func buildPublicConnections(nodes []NodeStatus) publicConnectionsResponse {
 			Curvature:    0.55,
 			StartOffsetY: 30,
 			EndOffsetY:   30,
+			DashArray:    "",
+		})
+	}
+
+	for _, node := range nodes {
+		if node.NodeType != "broadcast" || !node.Active {
+			continue
+		}
+		response.Connections = append(response.Connections, publicConnection{
+			ID:           fmt.Sprintf("server-to-peer-%d", node.PeerID),
+			FromNodeID:   "server-node",
+			ToNodeID:     fmt.Sprintf("peer-%d", node.PeerID),
+			Color:        "#ef4444",
+			Width:        2,
+			Opacity:      0.85,
+			Curvature:    0.55,
+			StartOffsetY: -30,
+			EndOffsetY:   -30,
 			DashArray:    "",
 		})
 	}
