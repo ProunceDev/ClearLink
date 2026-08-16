@@ -24,6 +24,13 @@ func (f *biquad) process(x float64) float64 {
 	return y
 }
 
+func polarDiscriminant(ar, aj, br, bj int) int {
+	cr := ar*br - aj*-bj
+	cj := aj*br + ar*-bj
+	angle := math.Atan2(float64(cj), float64(cr))
+	return int(angle / math.Pi * (1 << 14))
+}
+
 // Create 2nd-order Butterworth low-pass biquad
 func newLowpassBiquad(fc, fs float64, qFactor float64) *biquad {
 	w0 := 2 * math.Pi * fc / fs
@@ -144,6 +151,9 @@ func SdrLoop(ctx context.Context, dataChan chan<- SDRData) {
 	var phaseReal float64
 	var phaseImag float64
 	var prev complex64
+	var prevI int
+	var prevQ int
+	var hasPrevIQ bool
 	var deemph float64
 
 	aaBuffer := make([]float64, aaFilterTaps)
@@ -179,21 +189,30 @@ func SdrLoop(ctx context.Context, dataChan chan<- SDRData) {
 
 		powerSum = 0.0
 		powerSamples = 0
-		if RaspberryPiGeneration() != "pi3" { // Use atan2() for FM demodulation on Pi 4 and newer ( Sounds better but uses much more CPU)
-			for i := 0; i < n; i += 2 {
+		if true {//RaspberryPiGeneration() != "pi3" { // Use polar discriminant FM demodulation on Pi 4 and newer.
+			for i := 0; i+1 < n; i += 2 {
 				iqI := (float32(buf[i]) - 127.5) / 127.5
 				iqQ := (float32(buf[i+1]) - 127.5) / 127.5
 
-				curr := complex(iqI, iqQ)
+				currI := int(buf[i]) - 127
+				currQ := int(buf[i+1]) - 127
 
 				power := float64(iqI*iqI + iqQ*iqQ)
 				powerSum += power
 				powerSamples++
 
-				v := curr * complex(real(prev), -imag(prev))
-				audioVal := math.Atan2(float64(imag(v)), float64(real(v)))
+				if !hasPrevIQ {
+					prevI = currI
+					prevQ = currQ
+					hasPrevIQ = true
+					continue
+				}
 
-				prev = curr
+				pcm := polarDiscriminant(currI, currQ, prevI, prevQ)
+				audioVal := float64(pcm) * math.Pi / float64(1<<14)
+
+				prevI = currI
+				prevQ = currQ
 
 				aaSum -= aaBuffer[aaIndex]
 				aaBuffer[aaIndex] = audioVal
