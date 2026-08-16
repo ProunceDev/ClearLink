@@ -50,7 +50,7 @@ func currentNodes() []NodeStatus {
 	return getNodes()
 }
 
-const autoRefreshInterval = 150 * time.Millisecond
+const autoRefreshInterval = 200 * time.Millisecond
 
 func autoRefreshScript() app.UI {
 	return app.Script().Type("text/javascript").Text(fmt.Sprintf(`
@@ -59,11 +59,156 @@ func autoRefreshScript() app.UI {
 				return;
 			}
 			window.__clearlinkAutoRefresh = true;
-			setInterval(function() {
-				if (document.visibilityState === "visible") {
-					window.location.reload();
+
+			function escapeHtml(value) {
+				return String(value ?? '')
+					.replace(/&/g, '&amp;')
+					.replace(/</g, '&lt;')
+					.replace(/>/g, '&gt;')
+					.replace(/"/g, '&quot;')
+					.replace(/'/g, '&#39;');
+			}
+
+			function formatRSSI(value) {
+				if (value === null || value === undefined || value === '') {
+					return 'RSSI: N/A';
 				}
-			}, %d);
+				return 'RSSI: ' + Number(value).toFixed(2) + ' dB';
+			}
+
+			function renderPublicNode(node, showRSSI) {
+				var activeClass = node && node.active ? ' active' : '';
+				var nodeName = (node && node.name) ? node.name : 'Unknown';
+				var html = '<div class="node' + activeClass + '">';
+				html += '<div class="node-name">' + escapeHtml(nodeName) + '</div>';
+				if (showRSSI) {
+					html += '<div class="node-rssi">' + escapeHtml(formatRSSI(node && node.rssi !== undefined ? node.rssi : null)) + '</div>';
+				}
+				html += '</div>';
+				return html;
+			}
+
+			function renderSection(title, nodes, showRSSI) {
+				var items = [];
+				if (!nodes || nodes.length === 0) {
+					items.push('<div class="empty">No nodes</div>');
+				} else {
+					for (var i = 0; i < nodes.length; i++) {
+						items.push(renderPublicNode(nodes[i], showRSSI));
+					}
+				}
+				return '<div class="card"><div class="row-title">' + escapeHtml(title) + '</div><div class="row">' + items.join('') + '</div></div>';
+			}
+
+			function renderConnectionList(connections) {
+				if (!connections || connections.length === 0) {
+					return '<div class="empty">No active links</div>';
+				}
+				var items = [];
+				for (var i = 0; i < connections.length; i++) {
+					var c = connections[i];
+					var state = 'idle';
+					if (String(c.color || '').toLowerCase() === '#3b82f6') {
+						state = 'active';
+					}
+					items.push('<li>' + escapeHtml(c.fromNodeId + ' -> ' + c.toNodeId + ' (' + state + ')') + '</li>');
+				}
+				return '<ul class="connections-list">' + items.join('') + '</ul>';
+			}
+
+			function renderAdminNode(node) {
+				var rssiText = 'RSSI: N/A';
+				if (node && node.nodeType === 'listen' && node.rssi !== null && node.rssi !== undefined) {
+					rssiText = 'RSSI: ' + Number(node.rssi).toFixed(2) + ' dB';
+				}
+
+				var rows = [];
+				if (node && Array.isArray(node.config) && node.config.length > 0) {
+					for (var i = 0; i < node.config.length; i++) {
+						var cfg = node.config[i];
+						rows.push('<tr>' +
+							'<td>' + escapeHtml(cfg.type || '') + '</td>' +
+							'<td>' + escapeHtml(cfg.key || '') + '</td>' +
+							'<td><form class="cfg-form" method="post" action="/admin/config">' +
+								'<input type="hidden" name="peerId" value="' + escapeHtml(node.peerId || '') + '">' +
+								'<input type="hidden" name="type" value="' + escapeHtml(cfg.type || '') + '">' +
+								'<input type="hidden" name="key" value="' + escapeHtml(cfg.key || '') + '">' +
+								'<input type="text" name="value" value="' + escapeHtml(cfg.value || '') + '" required>' +
+								'<button type="submit">Save</button>' +
+							'</form></td>' +
+						'</tr>');
+					}
+				} else {
+					rows.push('<tr><td colspan="3" class="empty">No editable config entries</td></tr>');
+				}
+
+				var name = (node && node.name) ? node.name : 'Unknown';
+				return '<div class="card">' +
+					'<div><strong>Node ' + escapeHtml(node && node.peerId ? String(node.peerId) : '0') + '</strong> ' + escapeHtml(name) + '</div>' +
+					'<div class="grid meta">' +
+						'<div>Address: ' + escapeHtml(node && node.remoteAddr ? node.remoteAddr : '') + '</div>' +
+						'<div>Last heartbeat: ' + escapeHtml(node && node.lastHeartbeatAgo ? node.lastHeartbeatAgo : '') + ' (' + escapeHtml(node && node.lastHeartbeat ? node.lastHeartbeat : '') + ')</div>' +
+						'<div>' + escapeHtml(rssiText) + '</div>' +
+					'</div>' +
+					'<table><thead><tr><th>Type</th><th>Key</th><th>Value</th></tr></thead><tbody>' + rows.join('') + '</tbody></table>' +
+				'</div>';
+			}
+
+			function updateHomePage(topology, connections) {
+				var root = document.getElementById('clearlink-home-root');
+				if (!root) {
+					return;
+				}
+				var html = '';
+				html += renderSection('Listen Nodes', topology && topology.listen ? topology.listen : [], true);
+				html += renderSection('Server', [{ name: 'Server' }], false);
+				html += renderSection('Broadcast Nodes', topology && topology.broadcast ? topology.broadcast : [], false);
+				html += '<div class="card"><h2>Connections</h2>' + renderConnectionList(connections && connections.connections ? connections.connections : []) + '</div>';
+				root.innerHTML = html;
+			}
+
+			function updateAdminPage(nodes) {
+				var root = document.getElementById('clearlink-admin-root');
+				if (!root) {
+					return;
+				}
+				if (!nodes || nodes.length === 0) {
+					root.innerHTML = '<div class="card">No connected nodes.</div>';
+					return;
+				}
+				var html = '';
+				for (var i = 0; i < nodes.length; i++) {
+					html += renderAdminNode(nodes[i]);
+				}
+				root.innerHTML = html;
+			}
+
+			function poll() {
+				if (document.visibilityState !== 'visible') {
+					return;
+				}
+				var path = window.location.pathname || '/';
+				if (path === '/admin' || path.indexOf('/admin') === 0) {
+					fetch('/api/admin/nodes', { cache: 'no-store' })
+						.then(function(res) { if (!res.ok) { throw new Error('bad status'); } return res.json(); })
+						.then(function(nodes) { updateAdminPage(nodes); })
+						.catch(function() {});
+					return;
+				}
+				Promise.all([
+					fetch('/api/public/topology', { cache: 'no-store' }),
+					fetch('/api/public/connections', { cache: 'no-store' })
+				])
+					.then(function(results) {
+						return Promise.all(results.map(function(res) { if (!res.ok) { throw new Error('bad status'); } return res.json(); }));
+					})
+					.then(function(data) {
+						updateHomePage(data[0], data[1]);
+					})
+					.catch(function() {});
+			}
+
+			setInterval(poll, %d);
 		})();
 	`, autoRefreshInterval.Milliseconds()))
 }
@@ -84,13 +229,15 @@ func (p *homePage) Render() app.UI {
 			app.A().Class("admin-btn").Href("/admin").Text("Admin Panel"),
 		),
 		app.H1().Text("ClearLink"),
-		app.P().Class("subtle").Text("Live topology of connected nodes and links."),
-		homeSection("Listen Nodes", topology.Listen, true),
-		homeSection("Server", []publicNode{{Name: "Server"}}, false),
-		homeSection("Broadcast Nodes", topology.Broadcast, false),
-		app.Div().Class("card").Body(
-			app.H2().Text("Connections"),
-			renderConnectionList(connections.Connections),
+		app.P().Class("subtle").Text("Live data is refreshed automatically every 200ms."),
+		app.Div().ID("clearlink-home-root").Body(
+			homeSection("Listen Nodes", topology.Listen, true),
+			homeSection("Server", []publicNode{{Name: "Server"}}, false),
+			homeSection("Broadcast Nodes", topology.Broadcast, false),
+			app.Div().Class("card").Body(
+				app.H2().Text("Connections"),
+				renderConnectionList(connections.Connections),
+			),
 		),
 	)
 }
@@ -191,8 +338,8 @@ func (p *adminPage) Render() app.UI {
 				),
 			),
 		),
-		app.P().Class("subtle").Text("Auto-refreshing every 5 seconds so disconnects and node changes show up immediately."),
-		app.Div().Body(cards...),
+		app.P().Class("subtle").Text("Live node status is refreshed every 200ms."),
+		app.Div().ID("clearlink-admin-root").Body(cards...),
 	)
 }
 
