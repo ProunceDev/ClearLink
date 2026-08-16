@@ -84,18 +84,18 @@ func startWebServer() {
 	adminPassword, _ := config.GetConfigValue("AdminPassword", models.ApplicationTypeServer).(string)
 	webPort, ok := config.GetConfigValue("WebPort", models.ApplicationTypeServer).(int)
 	if !ok || webPort <= 0 {
-		webPort = 44325
+		webPort = 8080
 	}
 
 	panel, err := web.NewServer(web.Options{
-		Addr:             fmt.Sprintf("0.0.0.0:%d", webPort),
-		AdminUsername:    adminUsername,
-		AdminPassword:    adminPassword,
-		GetNodes:         getNodeStatuses,
-		UpdateNodeConfig: applyNodeConfigUpdate,
+		Addr:          fmt.Sprintf("0.0.0.0:%d", webPort),
+		AdminUsername: adminUsername,
+		AdminPassword: adminPassword,
+		GetNodes:      getNodeStatuses,
+		SaveConfig:    applyNodeConfigUpdate,
 	})
 	if err != nil {
-		log.Fatalf("Failed to initialize web panel: %v", err)
+		log.Fatalf("Failed to initialize API server: %v", err)
 	}
 	panel.Start()
 }

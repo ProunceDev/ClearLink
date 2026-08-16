@@ -323,7 +323,7 @@ func configureServerSection(reader *bufio.Reader, cfg *ini.File) error {
 		return err
 	}
 
-	webPort, err := promptIntWithDefault(reader, "WebPort", 44325)
+	webPort, err := promptIntWithDefault(reader, "WebPort", 8080)
 	if err != nil {
 		return err
 	}
@@ -333,22 +333,10 @@ func configureServerSection(reader *bufio.Reader, cfg *ini.File) error {
 		return err
 	}
 
-	adminUser, err := promptStringWithDefault(reader, "Admin Username", "admin")
-	if err != nil {
-		return err
-	}
-
-	adminPassword, err := promptRequiredString(reader, "Admin Password")
-	if err != nil {
-		return err
-	}
-
 	section := cfg.Section("server")
 	section.Key("Port").SetValue(strconv.Itoa(serverPort))
 	section.Key("WebPort").SetValue(strconv.Itoa(webPort))
 	section.Key("AuthKey").SetValue(authKey)
-	section.Key("AdminUsername").SetValue(adminUser)
-	section.Key("AdminPassword").SetValue(adminPassword)
 
 	return nil
 }

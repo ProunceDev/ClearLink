@@ -1,4 +1,7 @@
 BINARY_DIR = ./bin
+WEB_DIR := webpanel
+WEB_BUILD := $(WEB_DIR)/build/web
+EMBED_DIR := internal/web/static
 GO = go
 
 .DEFAULT_GOAL := help
@@ -13,11 +16,19 @@ help: ## Show this help message
 	@echo "Run 'make <target>' (e.g. make build, make run-server)"
 	@echo ""
 
+.PHONY: build-web
+build-web:
+	@mkdir -p $(EMBED_DIR)
+	cd $(WEB_DIR) && flutter build web --release
+	@rm -rf $(EMBED_DIR)/*
+	@cp -R $(WEB_BUILD)/* $(EMBED_DIR)/
+
 .PHONY: all build
 all: build
 
 build: ## Build all binaries
 	@mkdir -p $(BINARY_DIR)
+	@$(MAKE) build-web
 	@$(GO) build -o $(BINARY_DIR)/broadcast    ./cmd/broadcast
 	@$(GO) build -o $(BINARY_DIR)/listen       ./cmd/listen
 	@$(GO) build -o $(BINARY_DIR)/server       ./cmd/server
@@ -34,8 +45,9 @@ build-listen: ## Build only the listen binary
 	@$(GO) build -o $(BINARY_DIR)/listen       ./cmd/listen
 	@chmod +x $(BINARY_DIR)/listen
 
-build-server: ## Build only the server binary
+build-server: ## Build only the server binary after building the Flutter web app and embedding it
 	@mkdir -p $(BINARY_DIR)
+	@$(MAKE) build-web
 	@$(GO) mod download
 	@$(GO) build -o $(BINARY_DIR)/server       ./cmd/server
 	@chmod +x $(BINARY_DIR)/server

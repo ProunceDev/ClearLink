@@ -1,17 +1,17 @@
 package web
 
 import (
-	"crypto/rand"
-	"encoding/hex"
+	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
-	"strconv"
 	"strings"
-	"sync"
-	"time"
 )
+
+//go:embed static/*
+var staticFiles embed.FS
 
 type NodeConfig struct {
 	Key   string `json:"key"`
@@ -61,97 +61,98 @@ type publicConnectionsResponse struct {
 	Connections []publicConnection `json:"connections"`
 }
 
-type Options struct {
-	Addr             string
-	AdminUsername    string
-	AdminPassword    string
-	GetNodes         func() []NodeStatus
-	UpdateNodeConfig func(peerID uint16, key, applicationType, value string) error
-}
-
-type Server struct {
-	addr             string
-	adminUsername    string
-	adminPassword    string
-	getNodes         func() []NodeStatus
-	updateNodeConfig func(peerID uint16, key, applicationType, value string) error
-	uiHandler        http.Handler
-	sessionsMu       sync.RWMutex
-	sessions         map[string]time.Time
-}
-
-type configUpdateRequest struct {
+type SaveConfigRequest struct {
 	PeerID uint16 `json:"peerId"`
 	Key    string `json:"key"`
 	Type   string `json:"type"`
 	Value  string `json:"value"`
 }
 
-const sessionCookieName = "clearlink_admin_session"
+type Options struct {
+	Addr           string
+	AdminUsername  string
+	AdminPassword  string
+	GetNodes       func() []NodeStatus
+	SaveConfig     func(peerID uint16, key, applicationType, value string) error
+}
+
+type Server struct {
+	addr       string
+	username   string
+	password   string
+	getNodes   func() []NodeStatus
+	saveConfig func(peerID uint16, key, applicationType, value string) error
+}
 
 func NewServer(options Options) (*Server, error) {
 	if options.GetNodes == nil {
 		return nil, fmt.Errorf("GetNodes callback is required")
 	}
-	if options.UpdateNodeConfig == nil {
-		return nil, fmt.Errorf("UpdateNodeConfig callback is required")
-	}
 	addr := options.Addr
 	if addr == "" {
-		addr = "0.0.0.0:44325"
+		addr = "0.0.0.0:8080"
 	}
 	return &Server{
-		addr:             addr,
-		adminUsername:    options.AdminUsername,
-		adminPassword:    options.AdminPassword,
-		getNodes:         options.GetNodes,
-		updateNodeConfig: options.UpdateNodeConfig,
-		sessions:         make(map[string]time.Time),
+		addr:       addr,
+		username:   options.AdminUsername,
+		password:   options.AdminPassword,
+		getNodes:   options.GetNodes,
+		saveConfig: options.SaveConfig,
 	}, nil
 }
 
 func (s *Server) Start() {
-	s.uiHandler = newUIHandler(s.getNodes)
+	staticFS, err := fs.Sub(staticFiles, "static")
+	if err != nil {
+		log.Fatalf("embedded web assets not found; run the flutter build first: %v", err)
+	}
+
+	fileServer := http.FileServer(http.FS(staticFS))
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/app.js", handleNoopAppJS)
-	mux.HandleFunc("/wasm_exec.js", handleNoopWasmExec)
-	mux.HandleFunc("/app-worker.js", handleNoopAppWorker)
-	mux.HandleFunc("/manifest.webmanifest", handleManifest)
-	mux.HandleFunc("/app.css", handleAppCSS)
+
 	mux.HandleFunc("/api/public/topology", s.handlePublicTopology)
 	mux.HandleFunc("/api/public/connections", s.handlePublicConnections)
-	mux.HandleFunc("/login", s.handleLogin)
-	mux.HandleFunc("/logout", s.handleLogout)
-	mux.HandleFunc("/admin/config", s.handleAdminConfigFormUpdate)
+	mux.HandleFunc("/api/admin/login", s.handleAdminLogin)
 	mux.HandleFunc("/api/admin/nodes", s.handleAdminNodes)
-	mux.HandleFunc("/api/admin/nodes/config", s.handleAdminNodeConfigUpdate)
-	mux.Handle("/", http.HandlerFunc(s.handleUI))
+	mux.HandleFunc("/api/admin/config", s.handleAdminConfig)
+	mux.HandleFunc("/api/health", s.handleHealth)
 
-	go func() {
-		log.Printf("Web admin panel running at http://%s", s.addr)
-		if err := http.ListenAndServe(s.addr, mux); err != nil {
-			log.Printf("Web admin panel stopped: %v", err)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
 		}
-	}()
-}
 
-func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			http.NotFound(w, r)
+			return
+		}
 
-	if strings.HasPrefix(r.URL.Path, "/admin") && !s.isAuthorized(r) {
-		http.Redirect(w, r, "/login", http.StatusFound)
-		return
-	}
-	if r.URL.Path == "/login" && s.isAuthorized(r) {
-		http.Redirect(w, r, "/admin", http.StatusFound)
-		return
-	}
+		if r.URL.Path == "/" || !strings.Contains(r.URL.Path, ".") {
+			index, err := fs.ReadFile(staticFS, "index.html")
+			if err != nil {
+				http.Error(w, "index.html not found", http.StatusInternalServerError)
+				return
+			}
 
-	s.uiHandler.ServeHTTP(w, r)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+
+			if r.Method != http.MethodHead {
+				_, _ = w.Write(index)
+			}
+			return
+		}
+
+		fileServer.ServeHTTP(w, r)
+	})
+
+	log.Printf("API server running at http://%s", s.addr)
+
+	if err := http.ListenAndServe(s.addr, mux); err != nil {
+		log.Printf("API server stopped: %v", err)
+	}
 }
 
 func (s *Server) handlePublicTopology(w http.ResponseWriter, r *http.Request) {
@@ -167,6 +168,92 @@ func (s *Server) handlePublicTopology(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) isAuthorized(r *http.Request) bool {
+	if s.username == "" && s.password == "" {
+		return true
+	}
+	username, password, ok := r.BasicAuth()
+	return ok && username == s.username && password == s.password
+}
+
+func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	var creds struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
+		http.Error(w, "invalid login payload", http.StatusBadRequest)
+		return
+	}
+
+	if creds.Username == s.username && creds.Password == s.password {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		return
+	}
+
+	http.Error(w, "invalid credentials", http.StatusUnauthorized)
+}
+
+func (s *Server) handleAdminNodes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.isAuthorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(s.getNodes()); err != nil {
+		log.Printf("Failed to encode admin nodes: %v", err)
+	}
+}
+
+func (s *Server) handleAdminConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.isAuthorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if r.Method == http.MethodGet {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(s.getNodes()); err != nil {
+			log.Printf("Failed to encode config nodes: %v", err)
+		}
+		return
+	}
+
+	if s.saveConfig == nil {
+		http.Error(w, "config save handler not configured", http.StatusNotImplemented)
+		return
+	}
+
+	var req SaveConfigRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid config payload", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.saveConfig(req.PeerID, req.Key, req.Type, req.Value); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
 func (s *Server) handlePublicConnections(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -180,159 +267,13 @@ func (s *Server) handlePublicConnections(w http.ResponseWriter, r *http.Request)
 	}
 }
 
-func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		s.handleUI(w, r)
-		return
-	}
-	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	username := strings.TrimSpace(r.FormValue("username"))
-	password := r.FormValue("password")
-	if username != s.adminUsername || password != s.adminPassword {
-		http.Redirect(w, r, "/login", http.StatusFound)
-		return
-	}
-	token, err := generateSessionToken()
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	s.sessionsMu.Lock()
-	s.sessions[token] = time.Now()
-	s.sessionsMu.Unlock()
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-	})
-	http.Redirect(w, r, "/admin", http.StatusFound)
-}
-
-func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	cookie, err := r.Cookie(sessionCookieName)
-	if err == nil {
-		s.sessionsMu.Lock()
-		delete(s.sessions, cookie.Value)
-		s.sessionsMu.Unlock()
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-	})
-	http.Redirect(w, r, "/login", http.StatusFound)
-}
-
-func (s *Server) handleAdminNodes(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	if !s.isAuthorized(r) {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(s.getNodes()); err != nil {
-		log.Printf("Failed to encode nodes: %v", err)
-	}
-}
-
-func (s *Server) handleAdminNodeConfigUpdate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	if !s.isAuthorized(r) {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
-	defer r.Body.Close()
-
-	var payload configUpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	if payload.PeerID == 0 || payload.Key == "" || payload.Type == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	if err := s.updateNodeConfig(payload.PeerID, payload.Key, payload.Type, payload.Value); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(err.Error()))
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) handleAdminConfigFormUpdate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	if !s.isAuthorized(r) {
-		http.Redirect(w, r, "/login", http.StatusFound)
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	peerIDValue := strings.TrimSpace(r.FormValue("peerId"))
-	key := strings.TrimSpace(r.FormValue("key"))
-	appType := strings.TrimSpace(r.FormValue("type"))
-	value := r.FormValue("value")
-
-	peerID64, err := strconv.ParseUint(peerIDValue, 10, 16)
-	if err != nil || peerID64 == 0 || key == "" || appType == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	if err := s.updateNodeConfig(uint16(peerID64), key, appType, value); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(err.Error()))
-		return
-	}
-
-	http.Redirect(w, r, "/admin", http.StatusFound)
-}
-
-func (s *Server) isAuthorized(r *http.Request) bool {
-	cookie, err := r.Cookie(sessionCookieName)
-	if err != nil {
-		return false
-	}
-	s.sessionsMu.RLock()
-	_, ok := s.sessions[cookie.Value]
-	s.sessionsMu.RUnlock()
-	return ok
-}
-
-func generateSessionToken() (string, error) {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(buf), nil
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 func buildPublicTopology(nodes []NodeStatus) publicTopology {
@@ -399,49 +340,4 @@ func buildPublicConnections(nodes []NodeStatus) publicConnectionsResponse {
 	}
 
 	return response
-}
-
-func handleNoopAppJS(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	w.Header().Set("Content-Type", "application/javascript")
-	_, _ = w.Write([]byte("// Server-rendered mode: no client wasm runtime is required.\n"))
-}
-
-func handleNoopWasmExec(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	w.Header().Set("Content-Type", "application/javascript")
-	_, _ = w.Write([]byte("// wasm_exec.js is intentionally not used in server-rendered mode.\n"))
-}
-
-func handleNoopAppWorker(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	w.Header().Set("Content-Type", "application/javascript")
-	_, _ = w.Write([]byte("// Service worker disabled for server-rendered mode.\n"))
-}
-
-func handleManifest(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	w.Header().Set("Content-Type", "application/manifest+json")
-	_, _ = w.Write([]byte(`{"name":"ClearLink","short_name":"ClearLink","start_url":"/","display":"standalone"}`))
-}
-
-func handleAppCSS(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	w.Header().Set("Content-Type", "text/css")
-	_, _ = w.Write([]byte(`#app-wasm-loader{display:none!important;}`))
 }

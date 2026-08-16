@@ -16,7 +16,7 @@ var (
 var ConfigEntries = []models.ConfigEntry{
 	// SERVER
 	{Key: "Port", Type: models.ApplicationTypeServer, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 4125}},
-	{Key: "WebPort", Type: models.ApplicationTypeServer, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 44325}},
+	{Key: "WebPort", Type: models.ApplicationTypeServer, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 8080}},
 	{Key: "AuthKey", Type: models.ApplicationTypeServer, Default: models.EntryVar{Type: models.EntryTypeString, Data: "Default"}},
 	{Key: "AdminUsername", Type: models.ApplicationTypeServer, Default: models.EntryVar{Type: models.EntryTypeString, Data: "admin"}},
 	{Key: "AdminPassword", Type: models.ApplicationTypeServer, Default: models.EntryVar{Type: models.EntryTypeString, Data: "change-me"}},

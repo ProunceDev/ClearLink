@@ -7,7 +7,6 @@ require (
 	github.com/go-audio/audio v1.0.0
 	github.com/hraban/opus v0.0.0-20251117090126-c76ea7e21bf3
 	github.com/jpoirier/gortlsdr v2.10.0+incompatible
-	github.com/maxence-charriere/go-app/v11 v11.0.5
 	github.com/warthog618/go-gpiocdev v0.9.1
 	gopkg.in/ini.v1 v1.67.1
 )
