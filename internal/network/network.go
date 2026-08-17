@@ -18,6 +18,10 @@ const (
 	ProtocolVersion = 1
 	MaxDatagramSize = 1200
 
+	audioChunkFixedPayloadSize = 10
+	// MaxAudioChunkSamples keeps the serialized PCM payload within Header.Length.
+	MaxAudioChunkSamples = (1<<16 - 1 - audioChunkFixedPayloadSize) / 2
+
 	FragmentHeaderSize       = 8
 	DefaultReassemblyTimeout = 5 * time.Second
 
@@ -502,11 +506,11 @@ type ToAnyAudioChunkPacket struct {
 }
 
 func (p *ToAnyAudioChunkPacket) Marshal() ([]byte, error) {
-	if len(p.Samples) > 65535 {
+	if len(p.Samples) > MaxAudioChunkSamples {
 		return nil, errors.New("audio chunk too large")
 	}
 
-	buf := bytes.NewBuffer(make([]byte, 0, 10+len(p.Samples)*2))
+	buf := bytes.NewBuffer(make([]byte, 0, audioChunkFixedPayloadSize+len(p.Samples)*2))
 	if err := binary.Write(buf, binary.BigEndian, p.ChunkNumber); err != nil {
 		return nil, err
 	}
@@ -526,7 +530,7 @@ func (p *ToAnyAudioChunkPacket) Marshal() ([]byte, error) {
 }
 
 func UnmarshalToServerAudioChunk(payload []byte) (*ToAnyAudioChunkPacket, error) {
-	if len(payload) < 10 {
+	if len(payload) < audioChunkFixedPayloadSize {
 		return nil, errors.New("payload too short for ToAnyAudioChunkPacket")
 	}
 
@@ -544,7 +548,7 @@ func UnmarshalToServerAudioChunk(payload []byte) (*ToAnyAudioChunkPacket, error)
 		return nil, err
 	}
 
-	if len(payload) != 10+int(sampleCount)*2 {
+	if len(payload) != audioChunkFixedPayloadSize+int(sampleCount)*2 {
 		return nil, errors.New("invalid ToAnyAudioChunkPacket payload length")
 	}
 

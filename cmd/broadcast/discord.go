@@ -4,6 +4,7 @@ import (
 	"clearlink/internal/network"
 	"context"
 	"fmt"
+	"math"
 	"sync"
 
 	"github.com/bwmarrin/discordgo"
@@ -25,12 +26,63 @@ type DiscordPlayer struct {
 	opusEncoder    *opus.Encoder
 	guildID        string
 	voiceChannelID string
-	audioQueue     chan []int16
+	audioQueue     chan discordAudioChunk
 	sampleBuffer   []int16 // Buffer to accumulate samples to valid frame size
+	resampler      linearPCMResampler
 	quitChan       chan struct{}
 	wg             sync.WaitGroup
 	mu             sync.Mutex
 	isConnected    bool
+}
+
+type discordAudioChunk struct {
+	samples    []int16
+	sampleRate uint32
+}
+
+type linearPCMResampler struct {
+	inputRate uint32
+	position  float64
+	input     []int16
+}
+
+func (resampler *linearPCMResampler) process(samples []int16, inputRate uint32) []int16 {
+	if len(samples) == 0 || inputRate == 0 {
+		return nil
+	}
+	if inputRate == discordOpusSampleRate {
+		resampler.reset()
+		return append([]int16(nil), samples...)
+	}
+	if resampler.inputRate != inputRate {
+		resampler.reset()
+		resampler.inputRate = inputRate
+	}
+
+	resampler.input = append(resampler.input, samples...)
+	step := float64(inputRate) / discordOpusSampleRate
+	output := make([]int16, 0, int(float64(len(samples))*discordOpusSampleRate/float64(inputRate))+1)
+	for resampler.position+1 < float64(len(resampler.input)) {
+		index := int(resampler.position)
+		fraction := resampler.position - float64(index)
+		first := float64(resampler.input[index])
+		second := float64(resampler.input[index+1])
+		output = append(output, int16(math.Round(first+(second-first)*fraction)))
+		resampler.position += step
+	}
+
+	consumed := int(resampler.position)
+	if consumed > 0 {
+		resampler.input = append(resampler.input[:0], resampler.input[consumed:]...)
+		resampler.position -= float64(consumed)
+	}
+	return output
+}
+
+func (resampler *linearPCMResampler) reset() {
+	resampler.inputRate = 0
+	resampler.position = 0
+	resampler.input = resampler.input[:0]
 }
 
 func NewDiscordPlayer(botToken, guildID, voiceChannelID string) (*DiscordPlayer, error) {
@@ -57,7 +109,7 @@ func NewDiscordPlayer(botToken, guildID, voiceChannelID string) (*DiscordPlayer,
 		opusEncoder:    opusEnc,
 		guildID:        guildID,
 		voiceChannelID: voiceChannelID,
-		audioQueue:     make(chan []int16, discordQueueChunks),
+		audioQueue:     make(chan discordAudioChunk, discordQueueChunks),
 		sampleBuffer:   make([]int16, 0, discordOpusFrameSize*2),
 		quitChan:       make(chan struct{}),
 		isConnected:    false,
@@ -92,7 +144,7 @@ func (dp *DiscordPlayer) audioSendLoop() {
 		select {
 		case <-dp.quitChan:
 			return
-		case samples, open := <-dp.audioQueue:
+		case chunk, open := <-dp.audioQueue:
 			if !open {
 				return
 			}
@@ -102,6 +154,7 @@ func (dp *DiscordPlayer) audioSendLoop() {
 			}
 
 			dp.mu.Lock()
+			samples := dp.resampler.process(chunk.samples, chunk.sampleRate)
 			dp.sampleBuffer = append(dp.sampleBuffer, samples...)
 			if len(dp.sampleBuffer) > discordOpusFrameSize*discordMaxFrameBacklog {
 				dp.sampleBuffer = append([]int16(nil), dp.sampleBuffer[len(dp.sampleBuffer)-discordOpusFrameSize*discordMaxFrameBacklog:]...)
@@ -156,14 +209,23 @@ func (dp *DiscordPlayer) SendAudio(chunk *network.ToAnyAudioChunkPacket) {
 		return
 	}
 
-	samples := append([]int16(nil), chunk.Samples...)
+	if chunk.SampleRate == 0 {
+		fmt.Println("Discord relay dropped audio chunk with no sample rate")
+		return
+	}
+
+	audioChunk := discordAudioChunk{
+		samples:    append([]int16(nil), chunk.Samples...),
+		sampleRate: chunk.SampleRate,
+	}
 
 	select {
-	case dp.audioQueue <- samples:
+	case dp.audioQueue <- audioChunk:
 	case <-dp.quitChan:
 	default:
 		dp.mu.Lock()
 		dp.sampleBuffer = dp.sampleBuffer[:0]
+		dp.resampler.reset()
 		dp.mu.Unlock()
 
 		select {
@@ -172,7 +234,7 @@ func (dp *DiscordPlayer) SendAudio(chunk *network.ToAnyAudioChunkPacket) {
 		}
 
 		select {
-		case dp.audioQueue <- samples:
+		case dp.audioQueue <- audioChunk:
 		case <-dp.quitChan:
 		default:
 		}
@@ -182,6 +244,7 @@ func (dp *DiscordPlayer) SendAudio(chunk *network.ToAnyAudioChunkPacket) {
 func (dp *DiscordPlayer) resetBuffers() {
 	dp.mu.Lock()
 	dp.sampleBuffer = dp.sampleBuffer[:0]
+	dp.resampler.reset()
 	dp.mu.Unlock()
 
 	for {

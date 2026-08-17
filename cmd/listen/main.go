@@ -14,8 +14,6 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
-
-	"github.com/go-audio/audio"
 )
 
 var (
@@ -28,7 +26,6 @@ func sdrLoop(ctx context.Context) {
 	dataChan := make(chan sdrhelper.SDRData, 1)
 	var chunkNumber uint32
 	var squelchOpen bool
-	var dropNextChunk bool
 
 	go sdrhelper.SdrLoop(ctx, dataChan) // Run SDR in background goroutine
 
@@ -40,26 +37,39 @@ func sdrLoop(ctx context.Context) {
 			if !ok {
 				return
 			}
-			audioSamples := make([]int, len(data.AudioChunk))
-			for i, sample := range data.AudioChunk {
-				audioSamples[i] = int(sample)
-			}
-			_ = &audio.IntBuffer{
-				Format:         &audio.Format{NumChannels: 1, SampleRate: data.SampleRate},
-				SourceBitDepth: 16,
-				Data:           audioSamples,
+			if isConnected {
+				sendRSSI(data.RSSI)
 			}
 
-			squelchDB, _ := config.GetConfigValue("SquelchDB", models.ApplicationTypeListen).(int)
-			aboveSquelch := data.RSSI >= float64(squelchDB)
-			if aboveSquelch && !squelchOpen {
+			if data.HasAudio && !squelchOpen {
 				squelchOpen = true
-				dropNextChunk = true
-				fmt.Printf("Squelch open (RSSI %.1f dB >= %d dB)\n", data.RSSI, squelchDB)
-			} else if !aboveSquelch && squelchOpen {
+				fmt.Printf("Squelch open (RSSI %.1f dBFS)\n", data.RSSI)
+			}
+
+			if isConnected && data.HasAudio {
+				audioPkt := &network.ToAnyAudioChunkPacket{
+					ChunkNumber: chunkNumber,
+					SampleRate:  uint32(data.SampleRate),
+					Samples:     data.AudioChunk,
+				}
+				audioPayload, err := audioPkt.Marshal()
+				if err == nil {
+					audioHdr := &network.Header{
+						Type:       network.PacketTypeToAnyAudioChunk,
+						PeerID:     serverPeer.PeerID,
+						PeerSecret: serverPeer.PeerSecret,
+					}
+					if err := network.SendPacket(conn, serverPeer.RemoteAddr, audioHdr, audioPayload); err != nil {
+						log.Printf("Failed to send audio chunk: %v", err)
+					} else {
+						chunkNumber++
+					}
+				}
+			}
+
+			if squelchOpen && !data.SquelchOpen {
 				squelchOpen = false
-				dropNextChunk = false
-				fmt.Printf("Squelch closed (RSSI %.1f dB < %d dB)\n", data.RSSI, squelchDB)
+				fmt.Printf("Squelch closed (RSSI %.1f dBFS)\n", data.RSSI)
 				if isConnected {
 					audioPkt := &network.ToAnyAudioChunkPacket{
 						ChunkNumber: chunkNumber,
@@ -73,45 +83,33 @@ func sdrLoop(ctx context.Context) {
 							PeerID:     serverPeer.PeerID,
 							PeerSecret: serverPeer.PeerSecret,
 						}
-						network.SendPacket(conn, serverPeer.RemoteAddr, audioHdr, audioPayload)
-						chunkNumber++
-					}
-				}
-			}
-
-			if isConnected {
-				if squelchOpen {
-					if dropNextChunk {
-						dropNextChunk = false
-					} else {
-						audioPkt := &network.ToAnyAudioChunkPacket{
-							ChunkNumber: chunkNumber,
-							SampleRate:  uint32(data.SampleRate),
-							Samples:     data.AudioChunk,
-						}
-						audioPayload, err := audioPkt.Marshal()
-						if err == nil {
-							audioHdr := &network.Header{
-								Type:       network.PacketTypeToAnyAudioChunk,
-								PeerID:     serverPeer.PeerID,
-								PeerSecret: serverPeer.PeerSecret,
-							}
-							network.SendPacket(conn, serverPeer.RemoteAddr, audioHdr, audioPayload)
+						if err := network.SendPacket(conn, serverPeer.RemoteAddr, audioHdr, audioPayload); err != nil {
+							log.Printf("Failed to send audio stop: %v", err)
+						} else {
 							chunkNumber++
 						}
 					}
 				}
 
-				pkt := &network.ToServerRSSIPacket{RSSI: data.RSSI}
-				payload, _ := pkt.Marshal()
-				hdr := &network.Header{
-					Type:       network.PacketTypeToServerRSSI,
-					PeerID:     serverPeer.PeerID,
-					PeerSecret: serverPeer.PeerSecret,
-				}
-				network.SendPacket(conn, serverPeer.RemoteAddr, hdr, payload)
 			}
 		}
+	}
+}
+
+func sendRSSI(rssi float64) {
+	pkt := &network.ToServerRSSIPacket{RSSI: rssi}
+	payload, err := pkt.Marshal()
+	if err != nil {
+		log.Printf("Failed to marshal RSSI packet: %v", err)
+		return
+	}
+	hdr := &network.Header{
+		Type:       network.PacketTypeToServerRSSI,
+		PeerID:     serverPeer.PeerID,
+		PeerSecret: serverPeer.PeerSecret,
+	}
+	if err := network.SendPacket(conn, serverPeer.RemoteAddr, hdr, payload); err != nil {
+		log.Printf("Failed to send RSSI packet: %v", err)
 	}
 }
 

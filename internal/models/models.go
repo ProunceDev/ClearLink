@@ -35,6 +35,7 @@ type EntryType int
 const (
 	EntryTypeInt    EntryType = 0
 	EntryTypeString EntryType = 1
+	EntryTypeFloat  EntryType = 2
 )
 
 type NetworkPeer struct {

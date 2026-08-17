@@ -4,10 +4,12 @@ import (
 	"clearlink/internal/config"
 	"clearlink/internal/models"
 	"clearlink/internal/network"
+	sdrhelper "clearlink/internal/sdr_helper"
 	"clearlink/internal/web"
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"math/rand"
 	"net"
 	"os"
@@ -182,13 +184,36 @@ func applyNodeConfigUpdate(peerID uint16, key, applicationType, value string) er
 			return errors.New("invalid integer value")
 		}
 		targetEntry.Var.Data = parsed
+	case models.EntryTypeFloat:
+		parsed, err := strconv.ParseFloat(value, 64)
+		if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+			return errors.New("invalid floating-point value")
+		}
+		targetEntry.Var.Data = parsed
 	case models.EntryTypeString:
 		targetEntry.Var.Data = value
 	default:
 		return errors.New("unsupported config entry type")
 	}
 
-	updatePeerConfig(peer, targetEntry)
+	candidateConfig := models.Config{Entries: make([]models.ConfigEntry, len(peer.Config.Entries))}
+	copy(candidateConfig.Entries, peer.Config.Entries)
+	for index := range candidateConfig.Entries {
+		entry := &candidateConfig.Entries[index]
+		if entry.Key == targetEntry.Key && entry.Type == targetEntry.Type {
+			entry.Var.Data = targetEntry.Var.Data
+			break
+		}
+	}
+	if targetEntry.Type == models.ApplicationTypeListen {
+		if err := sdrhelper.ValidateListenConfig(candidateConfig); err != nil {
+			return fmt.Errorf("invalid narrow-FM configuration: %w", err)
+		}
+	}
+
+	if err := updatePeerConfig(peer, targetEntry); err != nil {
+		return err
+	}
 
 	peersMu.Lock()
 	if currentPeer, ok := peers[peerID]; ok {
@@ -255,20 +280,26 @@ func heartbeatLoop() {
 	}
 }
 
-func updatePeerConfig(peer *models.NetworkPeer, entry *models.ConfigEntry) {
+func updatePeerConfig(peer *models.NetworkPeer, entry *models.ConfigEntry) error {
 	updatePkt := &network.ToClientUpdateConfigEntryPacket{Entry: *entry}
-	payload, _ := updatePkt.Marshal()
+	payload, err := updatePkt.Marshal()
+	if err != nil {
+		return fmt.Errorf("marshal config update: %w", err)
+	}
 
 	hdr := &network.Header{
 		Type:       network.PacketTypeToClientUpdateConfigEntry,
 		PeerID:     peer.PeerID,
 		PeerSecret: peer.PeerSecret,
 	}
-	network.SendPacket(conn, peer.RemoteAddr, hdr, payload)
+	if err := network.SendPacket(conn, peer.RemoteAddr, hdr, payload); err != nil {
+		return fmt.Errorf("send config update: %w", err)
+	}
 	peersMu.Lock()
 	peer.HasSentConf = false
 	peersMu.Unlock()
 	fmt.Printf("Sent config update to peer %d at %s: %s:%s = %v\n", peer.PeerID, peer.RemoteAddr, string(entry.Type), entry.Key, entry.Var.Data)
+	return nil
 }
 
 func networkLoop() {
@@ -426,6 +457,7 @@ func networkLoop() {
 					continue
 				}
 				markListenNodeAudioActivity(hdr.PeerID)
+				refreshActiveAudioSource()
 				forwardAudioToBroadcastNodes(conn, hdr.PeerID, data)
 			default:
 				fmt.Printf("Unknown type %d from %s\n", hdr.Type, remoteAddr)
@@ -439,37 +471,41 @@ func audioRouterLoop() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		now := time.Now()
-		candidates := make([]listenSourceCandidate, 0)
+		refreshActiveAudioSource()
+	}
+}
 
-		peersMu.RLock()
-		for _, peer := range peers {
-			if peer.NodeType != models.ApplicationTypeListen || !peer.HasRSSI || !peer.HasAudio {
-				continue
-			}
-			if now.Sub(peer.LastAudioAt) > listenNodeLiveTimeout {
-				continue
-			}
-			candidates = append(candidates, listenSourceCandidate{
-				peerID: peer.PeerID,
-				rssi:   peer.LastRSSI,
-				start:  peer.AudioStartedAt,
-				score:  calculateListenNodeScore(peer, now),
-			})
+func refreshActiveAudioSource() uint16 {
+	now := time.Now()
+	candidates := make([]listenSourceCandidate, 0)
+
+	peersMu.RLock()
+	for _, peer := range peers {
+		if peer.NodeType != models.ApplicationTypeListen || !peer.HasRSSI || !peer.HasAudio {
+			continue
 		}
-		peersMu.RUnlock()
+		if now.Sub(peer.LastAudioAt) > listenNodeLiveTimeout {
+			continue
+		}
+		candidates = append(candidates, listenSourceCandidate{
+			peerID: peer.PeerID,
+			rssi:   peer.LastRSSI,
+			start:  peer.AudioStartedAt,
+			score:  calculateListenNodeScore(peer, now),
+		})
+	}
+	peersMu.RUnlock()
 
-		selectedPeerID := chooseAudioSource(candidates)
-		previousPeerID := uint16(activeSourcePeerID.Swap(uint32(selectedPeerID)))
-
-		if previousPeerID != selectedPeerID {
-			if selectedPeerID == 0 {
-				fmt.Println("Audio router: no active listen source")
-			} else {
-				fmt.Printf("Audio router: now routing listen peer %d\n", selectedPeerID)
-			}
+	selectedPeerID := chooseAudioSource(candidates)
+	previousPeerID := uint16(activeSourcePeerID.Swap(uint32(selectedPeerID)))
+	if previousPeerID != selectedPeerID {
+		if selectedPeerID == 0 {
+			fmt.Println("Audio router: no active listen source")
+		} else {
+			fmt.Printf("Audio router: now routing listen peer %d\n", selectedPeerID)
 		}
 	}
+	return selectedPeerID
 }
 
 func calculateListenNodeScore(peer *models.NetworkPeer, now time.Time) float64 {

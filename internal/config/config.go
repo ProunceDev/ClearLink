@@ -35,7 +35,6 @@ var ConfigEntries = []models.ConfigEntry{
 	{Key: "ServerPort", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 4125}},
 	{Key: "ServerAddr", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeString, Data: "127.0.0.1"}},
 	{Key: "NodeName", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeString, Data: "DefaultNodeName"}},
-	{Key: "SquelchDB", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: -15}},
 	{Key: "Frequency", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 146520000}},
 	{Key: "SampleRate", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 960000}},
 	{Key: "AudioRate", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 48000}},
@@ -43,11 +42,44 @@ var ConfigEntries = []models.ConfigEntry{
 	{Key: "BufferSize", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 16384}},
 	{Key: "AudioGain", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 28000}},
 	{Key: "FMDeviation", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 3000}},
-	{Key: "AudioCutoffHz", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 3000}},
-	{Key: "DeemphasisTauUs", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 90}},
+	{Key: "DeviceIndex", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 0}},
+	{Key: "DirectSampling", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 0}},
 	{Key: "TunerBandwidth", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 15000}},
-	{Key: "TunerGain", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 240}},
-	{Key: "AAFilterTaps", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 8}},
+	{Key: "TunerGain", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 254}},
+	{Key: "Bandwidth", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 0}},
+	{Key: "SquelchThreshold", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 0}},
+	{Key: "SquelchSNRThreshold", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeFloat, Data: 9.54}},
+	{Key: "CTCSS", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeFloat, Data: 0.0}},
+	{Key: "Notch", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeFloat, Data: 0.0}},
+	{Key: "NotchQ", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeFloat, Data: 10.0}},
+	{Key: "AmpFactor", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeFloat, Data: 1.0}},
+	{Key: "Highpass", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 100}},
+	{Key: "Lowpass", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 2500}},
+	{Key: "Tau", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 200}},
+}
+
+func configEntryDefaultValue(entry models.ConfigEntry, section *ini.Section) string {
+	if entry.Type == models.ApplicationTypeListen {
+		legacyKey := map[string]string{
+			"Lowpass":          "AudioCutoffHz",
+			"SquelchThreshold": "SquelchDB",
+			"Tau":              "DeemphasisTauUs",
+		}[entry.Key]
+		if legacyKey != "" && section.HasKey(legacyKey) {
+			return section.Key(legacyKey).String()
+		}
+	}
+
+	switch entry.Default.Type {
+	case models.EntryTypeInt:
+		return fmt.Sprintf("%d", entry.Default.Data.(int))
+	case models.EntryTypeString:
+		return entry.Default.Data.(string)
+	case models.EntryTypeFloat:
+		return fmt.Sprintf("%g", entry.Default.Data.(float64))
+	default:
+		return ""
+	}
 }
 
 // LoadConfig loads Config from an INI file
@@ -73,6 +105,8 @@ func LoadConfig(path string, app_type models.ApplicationType) (*models.Config, e
 			value = cfgFile.Section(string(app_type)).Key(entry.Key).MustInt(entry.Default.Data.(int))
 		case models.EntryTypeString:
 			value = cfgFile.Section(string(app_type)).Key(entry.Key).MustString(entry.Default.Data.(string))
+		case models.EntryTypeFloat:
+			value = cfgFile.Section(string(app_type)).Key(entry.Key).MustFloat64(entry.Default.Data.(float64))
 		}
 
 		cfg.Entries = append(cfg.Entries, models.ConfigEntry{
@@ -98,12 +132,7 @@ func InitConfig(path string, app_type models.ApplicationType) error {
 			if entry.Type != app_type {
 				continue
 			}
-			switch entry.Default.Type {
-			case models.EntryTypeInt:
-				cfg.Section(string(app_type)).Key(entry.Key).SetValue(fmt.Sprintf("%d", entry.Default.Data.(int)))
-			case models.EntryTypeString:
-				cfg.Section(string(app_type)).Key(entry.Key).SetValue(entry.Default.Data.(string))
-			}
+			cfg.Section(string(app_type)).Key(entry.Key).SetValue(configEntryDefaultValue(entry, cfg.Section(string(app_type))))
 		}
 
 		cfg.SaveTo(FilePath)
@@ -124,12 +153,8 @@ func InitConfig(path string, app_type models.ApplicationType) error {
 			}
 			if !cfgFile.Section(string(app_type)).HasKey(entry.Key) {
 				has_updated = true
-				switch entry.Default.Type {
-				case models.EntryTypeInt:
-					cfgFile.Section(string(app_type)).Key(entry.Key).SetValue(fmt.Sprintf("%d", entry.Default.Data.(int)))
-				case models.EntryTypeString:
-					cfgFile.Section(string(app_type)).Key(entry.Key).SetValue(entry.Default.Data.(string))
-				}
+				section := cfgFile.Section(string(app_type))
+				section.Key(entry.Key).SetValue(configEntryDefaultValue(entry, section))
 			}
 		}
 
@@ -167,6 +192,8 @@ func UpdateConfigValue(entry models.ConfigEntry) {
 					cfg.Section(string(entry.Type)).Key(entry.Key).SetValue(fmt.Sprintf("%d", entry.Var.Data.(int)))
 				case models.EntryTypeString:
 					cfg.Section(string(entry.Type)).Key(entry.Key).SetValue(entry.Var.Data.(string))
+				case models.EntryTypeFloat:
+					cfg.Section(string(entry.Type)).Key(entry.Key).SetValue(fmt.Sprintf("%g", entry.Var.Data.(float64)))
 				}
 			}
 
