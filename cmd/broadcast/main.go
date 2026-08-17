@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -19,8 +20,64 @@ var (
 	serverPeer    models.NetworkPeer
 	isConnected   bool
 	discordPlayer *DiscordPlayer
+	discordMu     sync.RWMutex
 	radioPlayer   *RadioPlayer
 )
+
+func setDiscordPlayer(player *DiscordPlayer) {
+	discordMu.Lock()
+	discordPlayer = player
+	discordMu.Unlock()
+}
+
+func getDiscordPlayer() *DiscordPlayer {
+	discordMu.RLock()
+	defer discordMu.RUnlock()
+	return discordPlayer
+}
+
+func closeDiscordPlayer() {
+	discordMu.Lock()
+	player := discordPlayer
+	discordPlayer = nil
+	discordMu.Unlock()
+
+	if player != nil {
+		player.Close()
+	}
+}
+
+func startDiscordInitLoop(ctx context.Context, botToken, guildID, voiceChannelID string) {
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+
+			if existing := getDiscordPlayer(); existing != nil && existing.IsConnected() {
+				return
+			}
+
+			dp, err := NewDiscordPlayer(botToken, guildID, voiceChannelID)
+			if err == nil {
+				setDiscordPlayer(dp)
+				fmt.Println("Discord player initialized")
+				return
+			}
+
+			fmt.Printf("Discord init failed: %v (retrying in 10s)\n", err)
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+}
 
 func scheduleRestartAfterConfigUpdate() {
 	go func() {
@@ -41,9 +98,7 @@ func main() {
 		fmt.Println("\rShutting down client.")
 		stopAudioRecorder()
 		closeAllNodeAudioStreams()
-		if discordPlayer != nil {
-			discordPlayer.Close()
-		}
+		closeDiscordPlayer()
 		if radioPlayer != nil {
 			radioPlayer.Close()
 		}
@@ -84,12 +139,8 @@ func main() {
 			log.Fatalf("Discord mode requires BotToken, GuildID, and VoiceChannelID in config")
 		}
 
-		dp, err := NewDiscordPlayer(botToken, guildID, voiceChannelID)
-		if err != nil {
-			log.Fatalf("Failed to initialize Discord player: %v", err)
-		}
-		discordPlayer = dp
-		fmt.Println("Discord player initialized")
+		// Avoid blocking startup on Discord gateway/voice join issues.
+		startDiscordInitLoop(ctx, botToken, guildID, voiceChannelID)
 	case "RADIO":
 		pttPin := config.GetConfigValue("Ptt_Pin", models.ApplicationTypeBroadcast).(int)
 		rp, err := NewRadioPlayer(pttPin)
@@ -265,8 +316,8 @@ func receiveLoop() {
 					fmt.Printf("Failed to parse routed audio packet: %v\n", err)
 					continue
 				}
-				if discordPlayer != nil {
-					discordPlayer.SendAudio(audioPkt)
+				if player := getDiscordPlayer(); player != nil {
+					player.SendAudio(audioPkt)
 				}
 				if radioPlayer != nil {
 					radioPlayer.SendAudio(audioPkt)

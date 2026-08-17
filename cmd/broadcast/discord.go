@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/hraban/opus"
@@ -18,6 +19,7 @@ const (
 	discordOpusBitrate     = 128000
 	discordQueueChunks     = 2
 	discordMaxFrameBacklog = 2
+	discordJoinTimeout     = 15 * time.Second
 )
 
 type DiscordPlayer struct {
@@ -115,8 +117,11 @@ func NewDiscordPlayer(botToken, guildID, voiceChannelID string) (*DiscordPlayer,
 		isConnected:    false,
 	}
 
-	// Join voice channel
-	voiceConn, err := session.ChannelVoiceJoin(context.Background(), guildID, voiceChannelID, false, true)
+	// Bound voice-join time so startup retries instead of hanging forever.
+	joinCtx, cancel := context.WithTimeout(context.Background(), discordJoinTimeout)
+	defer cancel()
+
+	voiceConn, err := session.ChannelVoiceJoin(joinCtx, guildID, voiceChannelID, false, true)
 	if err != nil {
 		session.Close()
 		return nil, fmt.Errorf("failed to join voice channel: %w", err)
