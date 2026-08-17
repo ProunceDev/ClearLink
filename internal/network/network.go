@@ -476,19 +476,24 @@ func UnmarshalToClientUpdateConfigEntry(payload []byte) (*ToClientUpdateConfigEn
 }
 
 type ToServerRSSIPacket struct {
-	RSSI float64
+	RSSI   float64
+	SNR    float64
+	HasSNR bool
 }
 
 func (p *ToServerRSSIPacket) Marshal() ([]byte, error) {
-	buf := bytes.NewBuffer(make([]byte, 0, 8))
+	buf := bytes.NewBuffer(make([]byte, 0, 16))
 	if err := binary.Write(buf, binary.BigEndian, p.RSSI); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(buf, binary.BigEndian, p.SNR); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
 }
 
 func UnmarshalToServerRSSI(payload []byte) (*ToServerRSSIPacket, error) {
-	if len(payload) < 8 {
+	if len(payload) != 8 && len(payload) != 16 {
 		return nil, errors.New("payload too short for ToServerRSSIPacket")
 	}
 	reader := bytes.NewReader(payload)
@@ -496,7 +501,14 @@ func UnmarshalToServerRSSI(payload []byte) (*ToServerRSSIPacket, error) {
 	if err := binary.Read(reader, binary.BigEndian, &rssi); err != nil {
 		return nil, err
 	}
-	return &ToServerRSSIPacket{RSSI: rssi}, nil
+	packet := &ToServerRSSIPacket{RSSI: rssi}
+	if len(payload) == 16 {
+		if err := binary.Read(reader, binary.BigEndian, &packet.SNR); err != nil {
+			return nil, err
+		}
+		packet.HasSNR = true
+	}
+	return packet, nil
 }
 
 type ToAnyAudioChunkPacket struct {

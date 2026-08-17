@@ -38,12 +38,12 @@ func sdrLoop(ctx context.Context) {
 				return
 			}
 			if isConnected {
-				sendRSSI(data.RSSI)
+				sendRSSI(data.RSSI, data.SNR)
 			}
 
 			if data.HasAudio && !squelchOpen {
 				squelchOpen = true
-				fmt.Printf("Squelch open (RSSI %.1f dBFS)\n", data.RSSI)
+				fmt.Printf("Squelch open (RSSI %.1f dBFS, SNR %.1f dB)\n", data.RSSI, data.SNR)
 			}
 
 			if isConnected && data.HasAudio {
@@ -69,7 +69,7 @@ func sdrLoop(ctx context.Context) {
 
 			if squelchOpen && !data.SquelchOpen {
 				squelchOpen = false
-				fmt.Printf("Squelch closed (RSSI %.1f dBFS)\n", data.RSSI)
+				fmt.Printf("Squelch closed (RSSI %.1f dBFS, SNR %.1f dB)\n", data.RSSI, data.SNR)
 				if isConnected {
 					audioPkt := &network.ToAnyAudioChunkPacket{
 						ChunkNumber: chunkNumber,
@@ -96,8 +96,8 @@ func sdrLoop(ctx context.Context) {
 	}
 }
 
-func sendRSSI(rssi float64) {
-	pkt := &network.ToServerRSSIPacket{RSSI: rssi}
+func sendRSSI(rssi, snr float64) {
+	pkt := &network.ToServerRSSIPacket{RSSI: rssi, SNR: snr}
 	payload, err := pkt.Marshal()
 	if err != nil {
 		log.Printf("Failed to marshal RSSI packet: %v", err)

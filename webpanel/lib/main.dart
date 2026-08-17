@@ -454,6 +454,7 @@ class TopologyDiagram extends StatelessWidget {
                               name: 'No listen nodes',
                               active: false,
                               rssi: null,
+                              snr: null,
                             ),
                             compact: true,
                           ),
@@ -486,6 +487,7 @@ class TopologyDiagram extends StatelessWidget {
                               name: 'No broadcast nodes',
                               active: false,
                               rssi: null,
+                              snr: null,
                             ),
                             compact: true,
                           ),
@@ -652,10 +654,10 @@ class _NodeCard extends StatelessWidget {
               ),
             ],
           ),
-          if (!isServer && node.rssi != null) ...[
+          if (!isServer && (node.rssi != null || node.snr != null)) ...[
             const SizedBox(height: 12),
             Text(
-              'RSSI ${node.rssi!.toStringAsFixed(0)} dB',
+              'RSSI ${node.rssi?.toStringAsFixed(0) ?? 'n/a'} dB | SNR ${node.snr?.toStringAsFixed(1) ?? 'n/a'} dB',
               style: const TextStyle(
                 color: Color(0xFFA9B7C9),
                 fontSize: 12,
@@ -693,7 +695,7 @@ class TopologyResponse {
   factory TopologyResponse.empty() {
     return TopologyResponse(
       listen: const [],
-      server: const PublicNode(peerId: 0, name: 'Server', active: false, rssi: null),
+      server: const PublicNode(peerId: 0, name: 'Server', active: false, rssi: null, snr: null),
       broadcast: const [],
     );
   }
@@ -716,15 +718,21 @@ class PublicNode {
   final String name;
   final bool active;
   final double? rssi;
+  final double? snr;
 
-  const PublicNode({required this.peerId, required this.name, required this.active, required this.rssi});
+  const PublicNode({required this.peerId, required this.name, required this.active, required this.rssi, required this.snr});
 
   factory PublicNode.fromJson(Map<String, dynamic> json) {
     final peerIdValue = (json['peerId'] as num?)?.toInt() ?? 0;
     final rawRssi = json['rssi'];
+    final rawSnr = json['snr'];
     double? parsedRssi;
+    double? parsedSnr;
     if (rawRssi != null) {
       parsedRssi = (rawRssi as num).toDouble();
+    }
+    if (rawSnr != null) {
+      parsedSnr = (rawSnr as num).toDouble();
     }
 
     final requestedName = (json['name'] as String? ?? 'Peer $peerIdValue').trim();
@@ -734,6 +742,7 @@ class PublicNode {
       name: requestedName.isEmpty ? 'Peer $peerIdValue' : requestedName,
       active: json['active'] as bool? ?? false,
       rssi: parsedRssi,
+      snr: parsedSnr,
     );
   }
 }
@@ -773,6 +782,7 @@ class NodeConfigViewModel {
   final String lastHeartbeatAgo;
   final bool active;
   final double? rssi;
+  final double? snr;
   final List<NodeConfigEntryViewModel> config;
 
   const NodeConfigViewModel({
@@ -784,6 +794,7 @@ class NodeConfigViewModel {
     required this.lastHeartbeatAgo,
     required this.active,
     required this.rssi,
+    required this.snr,
     required this.config,
   });
 
@@ -798,6 +809,7 @@ class NodeConfigViewModel {
       lastHeartbeatAgo: json['lastHeartbeatAgo'] as String? ?? '',
       active: json['active'] as bool? ?? false,
       rssi: (json['rssi'] is num) ? (json['rssi'] as num).toDouble() : null,
+        snr: (json['snr'] is num) ? (json['snr'] as num).toDouble() : null,
       config: rawConfig
           .map((entry) => NodeConfigEntryViewModel.fromJson(entry as Map<String, dynamic>))
           .toList(),
@@ -942,6 +954,7 @@ class _AdminPanelSheetState extends State<AdminPanelSheet> {
                             _InfoRow(label: 'IP', value: node.remoteAddr),
                             _InfoRow(label: 'Last heartbeat', value: node.lastHeartbeatAgo.isEmpty ? 'n/a' : node.lastHeartbeatAgo),
                             _InfoRow(label: 'RSSI', value: node.rssi == null ? 'n/a' : '${node.rssi!.toStringAsFixed(0)} dB'),
+                            _InfoRow(label: 'SNR', value: node.snr == null ? 'n/a' : '${node.snr!.toStringAsFixed(1)} dB'),
                             const SizedBox(height: 12),
                             if (node.config.isEmpty)
                               const Text(

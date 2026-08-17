@@ -136,6 +136,10 @@ func getNodeStatuses() []web.NodeStatus {
 			rssi := peer.LastRSSI
 			node.RSSI = &rssi
 		}
+		if peer.HasSNR {
+			snr := peer.LastSNR
+			node.SNR = &snr
+		}
 		nodes = append(nodes, node)
 	}
 
@@ -439,6 +443,10 @@ func networkLoop() {
 				if peer, ok := peers[hdr.PeerID]; ok {
 					peer.LastRSSI = data.RSSI
 					peer.HasRSSI = true
+					if data.HasSNR {
+						peer.LastSNR = data.SNR
+						peer.HasSNR = true
+					}
 				}
 				peersMu.Unlock()
 			case network.PacketTypeToAnyAudioChunk:

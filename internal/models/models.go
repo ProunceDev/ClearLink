@@ -44,6 +44,8 @@ type NetworkPeer struct {
 	LastHeartbeat  time.Time
 	LastRSSI       float64
 	HasRSSI        bool
+	LastSNR        float64
+	HasSNR         bool
 	HasAudio       bool
 	AudioStartedAt time.Time
 	LastAudioAt    time.Time
@@ -57,4 +59,5 @@ type NetworkPeer struct {
 type AudioSource struct {
 	PeerID uint16
 	RSSI   float64
+	SNR    float64
 }

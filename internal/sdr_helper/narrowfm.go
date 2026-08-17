@@ -399,6 +399,13 @@ func (processor *narrowFMProcessor) processIQ(rawI, rawQ float64) (float64, bool
 	return clampAudio(audio), true, true
 }
 
+func (processor *narrowFMProcessor) currentSNRDB() float64 {
+	if processor.squelch == nil {
+		return -200
+	}
+	return processor.squelch.currentSNRDB()
+}
+
 func clampAudio(sample float64) float64 {
 	if math.IsNaN(sample) {
 		return 0
@@ -840,6 +847,22 @@ func (squelch *narrowFMSquelch) hasSignal() bool {
 		return squelch.hasPreFilterSignal() && squelch.hasPostFilterSignal()
 	}
 	return squelch.hasPreFilterSignal()
+}
+
+func (squelch *narrowFMSquelch) currentSNRDB() float64 {
+	noise := squelch.noiseFloor
+	if noise <= 1e-12 {
+		return -200
+	}
+	signal := squelch.preFilter.full
+	if signal <= 1e-12 {
+		return -200
+	}
+	ratio := signal / noise
+	if ratio <= 1e-12 {
+		return -200
+	}
+	return 20 * math.Log10(ratio)
 }
 
 func (squelch *narrowFMSquelch) isFlapping() bool {

@@ -62,6 +62,8 @@ func sdrLoopNarrowFM(ctx context.Context, dataChan chan<- SDRData) error {
 	buf := make([]uint8, bufferSize)
 	chunkPowerSum := 0.0
 	chunkPowerSamples := 0
+	chunkSNRSum := 0.0
+	chunkSNRSamples := 0
 	chunkHasAudio := false
 	chunkSquelchOpen := false
 	audioGain := float64(listenIntConfig("AudioGain"))
@@ -91,6 +93,8 @@ func sdrLoopNarrowFM(ctx context.Context, dataChan chan<- SDRData) error {
 			if !emitted {
 				continue
 			}
+			chunkSNRSum += processor.currentSNRDB()
+			chunkSNRSamples++
 
 			sample := int(math.Round(audioSample * audioGain))
 			if sample > math.MaxInt16 {
@@ -114,11 +118,17 @@ func sdrLoopNarrowFM(ctx context.Context, dataChan chan<- SDRData) error {
 				}
 			}
 
+			snr := -200.0
+			if chunkSNRSamples > 0 {
+				snr = chunkSNRSum / float64(chunkSNRSamples)
+			}
+
 			chunk := make([]int16, len(audioChunk))
 			copy(chunk, audioChunk)
 			select {
 			case dataChan <- SDRData{
 				RSSI:        rssi,
+				SNR:         snr,
 				SampleRate:  settings.OutputSampleRate,
 				AudioChunk:  chunk,
 				SquelchOpen: chunkSquelchOpen,
@@ -130,6 +140,8 @@ func sdrLoopNarrowFM(ctx context.Context, dataChan chan<- SDRData) error {
 			audioChunk = audioChunk[:0]
 			chunkPowerSum = 0
 			chunkPowerSamples = 0
+			chunkSNRSum = 0
+			chunkSNRSamples = 0
 			chunkHasAudio = false
 		}
 	}
