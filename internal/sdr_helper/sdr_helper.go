@@ -37,7 +37,7 @@ func newLowpassBiquad(cutoffHz, sampleRate, qFactor float64) *biquad {
 
 // SDRData holds receiver output for a single PCM chunk.
 type SDRData struct {
-	RSSI        float64 // Average signal strength in dBFS for this chunk
+	RSSI        float64 // Smoothed selected-channel signal strength in dBFS
 	SNR         float64 // Estimated signal-to-noise ratio in dB for this chunk
 	SampleRate  int     // Sample rate for AudioChunk
 	AudioChunk  []int16 // 16-bit PCM mono audio chunk

@@ -12,6 +12,8 @@ const nfmReferenceSampleRate = 16000.0
 type narrowFMSettings struct {
 	InputSampleRate      int
 	OutputSampleRate     int
+	TargetFrequencyHz    int
+	CenterFrequencyHz    int
 	FMDeviationHz        float64
 	ChannelBandwidthHz   float64
 	HighpassHz           float64
@@ -28,6 +30,12 @@ type narrowFMSettings struct {
 func (settings narrowFMSettings) validate() error {
 	if settings.InputSampleRate < 1 || settings.OutputSampleRate < 1 {
 		return fmt.Errorf("sample rates must be positive")
+	}
+	if settings.TargetFrequencyHz <= 0 {
+		return fmt.Errorf("frequency must be positive")
+	}
+	if settings.CenterFrequencyHz < 0 {
+		return fmt.Errorf("center frequency must not be negative")
 	}
 	for _, value := range []struct {
 		name string
@@ -125,6 +133,14 @@ func ValidateListenConfig(cfg models.Config) error {
 		return fmt.Errorf("frequency must be positive")
 	}
 
+	centerFrequency, err := listenConfigIntFromEntries(cfg.Entries, "CenterFrequency")
+	if err != nil {
+		return err
+	}
+	if centerFrequency < 0 {
+		return fmt.Errorf("center frequency must not be negative")
+	}
+
 	chunkDuration, err := listenConfigIntFromEntries(cfg.Entries, "AudioChunkMs")
 	if err != nil {
 		return err
@@ -189,6 +205,12 @@ func narrowFMSettingsFromEntries(entries []models.ConfigEntry) (narrowFMSettings
 		return narrowFMSettings{}, err
 	}
 	if settings.OutputSampleRate, err = listenConfigIntFromEntries(entries, "AudioRate"); err != nil {
+		return narrowFMSettings{}, err
+	}
+	if settings.TargetFrequencyHz, err = listenConfigIntFromEntries(entries, "Frequency"); err != nil {
+		return narrowFMSettings{}, err
+	}
+	if settings.CenterFrequencyHz, err = listenConfigIntFromEntries(entries, "CenterFrequency"); err != nil {
 		return narrowFMSettings{}, err
 	}
 	if settings.FMDeviationHz, err = listenConfigFloatFromIntEntries(entries, "FMDeviation"); err != nil {
@@ -273,6 +295,8 @@ type narrowFMProcessor struct {
 	decimation          int
 	decimationCounter   int
 	demodScale          float64
+	frequencyShiftStep  float64
+	frequencyShiftPhase float64
 	previousI           float64
 	previousQ           float64
 	hasPreviousIQ       bool
@@ -298,6 +322,7 @@ func newNarrowFMProcessor(settings narrowFMSettings) (*narrowFMProcessor, error)
 		settings:   settings,
 		decimation: settings.InputSampleRate / settings.OutputSampleRate,
 		demodScale: inputRate / (2 * math.Pi * settings.FMDeviationHz),
+		frequencyShiftStep: 2 * math.Pi * float64(settings.CenterFrequencyHz-settings.TargetFrequencyHz) / inputRate,
 		discriminatorFilter: []*biquad{
 			newLowpassBiquad(antiAliasCutoff(settings.LowpassHz, outputRate), inputRate, 0.5412),
 			newLowpassBiquad(antiAliasCutoff(settings.LowpassHz, outputRate), inputRate, 1.3065),
@@ -343,11 +368,21 @@ func antiAliasCutoff(lowpassHz, outputRate float64) float64 {
 }
 
 func (processor *narrowFMProcessor) processIQ(rawI, rawQ float64) (float64, bool, bool) {
+	if processor.frequencyShiftStep != 0 {
+		sinPhase, cosPhase := math.Sincos(processor.frequencyShiftPhase)
+		rawI, rawQ = rawI*cosPhase-rawQ*sinPhase, rawI*sinPhase+rawQ*cosPhase
+		processor.frequencyShiftPhase += processor.frequencyShiftStep
+		if processor.frequencyShiftPhase > math.Pi || processor.frequencyShiftPhase < -math.Pi {
+			processor.frequencyShiftPhase = math.Remainder(processor.frequencyShiftPhase, 2*math.Pi)
+		}
+	}
+
 	filteredI, filteredQ := rawI, rawQ
 	if processor.iqFilterI != nil {
 		filteredI = processor.iqFilterI.process(rawI)
 		filteredQ = processor.iqFilterQ.process(rawQ)
 	}
+	channelLevel := math.Hypot(filteredI, filteredQ)
 
 	if !processor.hasPreviousIQ {
 		processor.previousI = filteredI
@@ -370,9 +405,9 @@ func (processor *narrowFMProcessor) processIQ(rawI, rawQ float64) (float64, bool
 	}
 	processor.decimationCounter = 0
 
-	processor.squelch.processRawSample(math.Hypot(rawI, rawQ))
+	processor.squelch.processRawSample(channelLevel)
 	if processor.iqFilterI != nil && processor.squelch.shouldFilterSample() {
-		processor.squelch.processFilteredSample(math.Hypot(filteredI, filteredQ))
+		processor.squelch.processFilteredSample(channelLevel)
 	}
 	if !processor.squelch.shouldProcessAudio() {
 		return 0, true, false
@@ -404,6 +439,13 @@ func (processor *narrowFMProcessor) currentSNRDB() float64 {
 		return -200
 	}
 	return processor.squelch.currentSNRDB()
+}
+
+func (processor *narrowFMProcessor) currentRSSIDBFS() float64 {
+	if processor.squelch == nil {
+		return -200
+	}
+	return processor.squelch.currentSignalDBFS()
 }
 
 func clampAudio(sample float64) float64 {
@@ -863,6 +905,14 @@ func (squelch *narrowFMSquelch) currentSNRDB() float64 {
 		return -200
 	}
 	return 20 * math.Log10(ratio)
+}
+
+func (squelch *narrowFMSquelch) currentSignalDBFS() float64 {
+	signal := squelch.preFilter.full
+	if signal <= 1e-12 {
+		return -200
+	}
+	return 20 * math.Log10(signal)
 }
 
 func (squelch *narrowFMSquelch) isFlapping() bool {

@@ -437,12 +437,18 @@ func configureListenSection(reader *bufio.Reader, cfg *ini.File) error {
 		return err
 	}
 
+	centerFrequencyHz, err := promptCenterFrequencyHz(reader, "CenterFrequency (MHz, 0 uses Frequency)")
+	if err != nil {
+		return err
+	}
+
 	section := cfg.Section("listen")
 	section.Key("AuthKey").SetValue(authKey)
 	section.Key("ServerPort").SetValue(strconv.Itoa(serverPort))
 	section.Key("ServerAddr").SetValue(serverAddr)
 	section.Key("NodeName").SetValue(nodeName)
 	section.Key("Frequency").SetValue(strconv.Itoa(frequencyHz))
+	section.Key("CenterFrequency").SetValue(strconv.Itoa(centerFrequencyHz))
 
 	return nil
 }
@@ -560,6 +566,26 @@ func promptFrequencyHz(reader *bufio.Reader, label string) (int, error) {
 		}
 
 		warn("Enter a value like 146.520")
+	}
+}
+
+func promptCenterFrequencyHz(reader *bufio.Reader, label string) (int, error) {
+	for {
+		text, err := promptRaw(reader, label+": ")
+		if err != nil {
+			return 0, err
+		}
+
+		if text == "" || text == "0" {
+			return 0, nil
+		}
+
+		value, err := parseFrequency(text)
+		if err == nil {
+			return value, nil
+		}
+
+		warn("Enter a value like 146.520 or 0")
 	}
 }
 

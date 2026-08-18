@@ -60,8 +60,6 @@ func sdrLoopNarrowFM(ctx context.Context, dataChan chan<- SDRData) error {
 
 	audioChunk := make([]int16, 0, chunkSamples)
 	buf := make([]uint8, bufferSize)
-	chunkPowerSum := 0.0
-	chunkPowerSamples := 0
 	chunkSNRSum := 0.0
 	chunkSNRSamples := 0
 	chunkHasAudio := false
@@ -86,8 +84,6 @@ func sdrLoopNarrowFM(ctx context.Context, dataChan chan<- SDRData) error {
 		for index := 0; index+1 < n; index += 2 {
 			rawI := (float64(buf[index]) - 127.5) / 127.5
 			rawQ := (float64(buf[index+1]) - 127.5) / 127.5
-			chunkPowerSum += rawI*rawI + rawQ*rawQ
-			chunkPowerSamples++
 
 			audioSample, emitted, squelchOpen := processor.processIQ(rawI, rawQ)
 			if !emitted {
@@ -110,13 +106,7 @@ func sdrLoopNarrowFM(ctx context.Context, dataChan chan<- SDRData) error {
 				continue
 			}
 
-			rssi := -200.0
-			if chunkPowerSamples > 0 {
-				averagePower := chunkPowerSum / float64(chunkPowerSamples)
-				if averagePower > 1e-12 {
-					rssi = 10 * math.Log10(averagePower)
-				}
-			}
+			rssi := processor.currentRSSIDBFS()
 
 			snr := -200.0
 			if chunkSNRSamples > 0 {
@@ -138,8 +128,6 @@ func sdrLoopNarrowFM(ctx context.Context, dataChan chan<- SDRData) error {
 			}
 
 			audioChunk = audioChunk[:0]
-			chunkPowerSum = 0
-			chunkPowerSamples = 0
 			chunkSNRSum = 0
 			chunkSNRSamples = 0
 			chunkHasAudio = false
@@ -155,6 +143,20 @@ func listenIntConfig(key string) int {
 	return value
 }
 
+func nearestTunerGain(gains []int, requested int) int {
+	if len(gains) == 0 {
+		return requested
+	}
+
+	nearest := gains[0]
+	for _, gain := range gains[1:] {
+		if math.Abs(float64(gain-requested)) < math.Abs(float64(nearest-requested)) {
+			nearest = gain
+		}
+	}
+	return nearest
+}
+
 func configureRTLSDR(dev *rtlsdr.Context, settings narrowFMSettings) error {
 	directSampling := rtlsdr.SamplingMode(listenIntConfig("DirectSampling"))
 	switch directSampling {
@@ -165,7 +167,11 @@ func configureRTLSDR(dev *rtlsdr.Context, settings narrowFMSettings) error {
 	if err := dev.SetDirectSampling(directSampling); err != nil {
 		return fmt.Errorf("set direct sampling: %w", err)
 	}
-	if err := dev.SetCenterFreq(listenIntConfig("Frequency")); err != nil {
+	centerFrequency := listenIntConfig("CenterFrequency")
+	if centerFrequency <= 0 {
+		centerFrequency = listenIntConfig("Frequency")
+	}
+	if err := dev.SetCenterFreq(centerFrequency); err != nil {
 		return fmt.Errorf("set center frequency: %w", err)
 	}
 	if err := dev.SetSampleRate(settings.InputSampleRate); err != nil {
@@ -174,20 +180,45 @@ func configureRTLSDR(dev *rtlsdr.Context, settings narrowFMSettings) error {
 	if err := dev.SetTunerGainMode(true); err != nil {
 		fmt.Printf("warning: SetTunerGainMode failed: %v\n", err)
 	}
-	if err := dev.SetTunerGain(listenIntConfig("TunerGain")); err != nil {
+	requestedGain := listenIntConfig("TunerGain")
+	if gains, err := dev.GetTunerGains(); err == nil && len(gains) > 0 {
+		gain := nearestTunerGain(gains, requestedGain)
+		if gain != requestedGain {
+			fmt.Printf("RTL-SDR requested tuner gain %d (x10 dB) is unavailable; using %d (x10 dB)\n", requestedGain, gain)
+		}
+		if err := dev.SetTunerGain(gain); err != nil {
+			fmt.Printf("warning: SetTunerGain failed: %v\n", err)
+		}
+		fmt.Printf("RTL-SDR supported gains (x10 dB): %v\n", gains)
+	} else if err := dev.SetTunerGain(requestedGain); err != nil {
 		fmt.Printf("warning: SetTunerGain failed: %v\n", err)
 	}
-	if err := dev.SetTunerBw(listenIntConfig("TunerBandwidth")); err != nil {
+	if err := dev.SetAgcMode(false); err != nil {
+		fmt.Printf("warning: SetAgcMode failed: %v\n", err)
+	}
+
+	tunerBandwidth := listenIntConfig("TunerBandwidth")
+	targetOffset := math.Abs(float64(settings.TargetFrequencyHz - centerFrequency))
+	minimumTunerBandwidth := int(math.Ceil(2*targetOffset + settings.ChannelBandwidthHz))
+	if tunerBandwidth > 0 && tunerBandwidth < minimumTunerBandwidth {
+		fmt.Printf("warning: tuner bandwidth %d Hz cannot cover a %.0f Hz offset and %.0f Hz channel; using automatic bandwidth\n", tunerBandwidth, targetOffset, settings.ChannelBandwidthHz)
+		tunerBandwidth = 0
+	}
+	if targetOffset >= 0.45*float64(settings.InputSampleRate) {
+		fmt.Printf("warning: target is %.0f Hz from center; choose a center within %.0f Hz for reliable reception\n", targetOffset, 0.45*float64(settings.InputSampleRate))
+	}
+	if err := dev.SetTunerBw(tunerBandwidth); err != nil {
 		fmt.Printf("warning: SetTunerBw failed: %v\n", err)
 	}
 	if err := dev.ResetBuffer(); err != nil {
 		return fmt.Errorf("reset RTL-SDR buffer: %w", err)
 	}
 
-	if gains, err := dev.GetTunerGains(); err == nil && len(gains) > 0 {
-		fmt.Printf("RTL-SDR supported gains (x10 dB): %v\n", gains)
+	if centerFrequency != listenIntConfig("Frequency") {
+		fmt.Printf("Monitoring %.3f MHz at center %.3f MHz\n", float64(listenIntConfig("Frequency"))/1e6, float64(centerFrequency)/1e6)
+	} else {
+		fmt.Printf("Monitoring %.3f MHz\n", float64(listenIntConfig("Frequency"))/1e6)
 	}
-	fmt.Printf("Monitoring %.3f MHz\n", float64(listenIntConfig("Frequency"))/1e6)
 	fmt.Printf("NFM input: %d Hz, audio: %d Hz, channel bandwidth: %.0f Hz\n", settings.InputSampleRate, settings.OutputSampleRate, settings.ChannelBandwidthHz)
 	return nil
 }

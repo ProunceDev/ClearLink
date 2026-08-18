@@ -41,6 +41,39 @@ func TestNarrowFMSquelchCanBeAlwaysOpen(t *testing.T) {
 	}
 }
 
+func TestNarrowFMProcessorSquelchUsesChannelFilteredIQ(t *testing.T) {
+	processor, err := newNarrowFMProcessor(narrowFMSettings{
+		InputSampleRate:      48000,
+		OutputSampleRate:     48000,
+		TargetFrequencyHz:    146520000,
+		CenterFrequencyHz:    146520000,
+		FMDeviationHz:        3000,
+		ChannelBandwidthHz:   4000,
+		SquelchThresholdDBFS: -30,
+		AmpFactor:            1,
+	})
+	if err != nil {
+		t.Fatalf("newNarrowFMProcessor() error = %v", err)
+	}
+
+	const (
+		sampleRate = 48000.0
+		interferer = 10000.0
+		amplitude  = 0.25
+	)
+	for sample := 0; sample < int(sampleRate); sample++ {
+		phase := 2 * math.Pi * interferer * float64(sample) / sampleRate
+		processor.processIQ(amplitude*math.Cos(phase), amplitude*math.Sin(phase))
+	}
+
+	if got := processor.squelch.preFilter.full; got >= 0.02 {
+		t.Fatalf("out-of-channel signal level = %f, want less than 0.02", got)
+	}
+	if got := processor.currentRSSIDBFS(); got >= -34 {
+		t.Fatalf("out-of-channel RSSI = %f dBFS, want less than -34 dBFS", got)
+	}
+}
+
 func TestNarrowFMSquelchRequiresConfiguredCTCSS(t *testing.T) {
 	const sampleRate = 16000.0
 	const targetTone = 100.0
@@ -166,6 +199,7 @@ func TestValidateListenConfigRejectsInvalidDSPSettings(t *testing.T) {
 		{name: "oversized audio chunk", key: "AudioChunkMs", value: 10000},
 		{name: "reversed output filters", key: "Lowpass", value: 50},
 		{name: "invalid direct sampling", key: "DirectSampling", value: 3},
+		{name: "negative center frequency", key: "CenterFrequency", value: -1},
 		{name: "non-finite CTCSS", key: "CTCSS", value: math.Inf(1)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -216,9 +250,92 @@ func validListenTestConfig() models.Config {
 		intEntry("DeviceIndex", 0),
 		intEntry("DirectSampling", 0),
 		intEntry("Frequency", 146520000),
+		intEntry("CenterFrequency", 0),
 		intEntry("AudioChunkMs", 20),
 		intEntry("BufferSize", 16384),
 		intEntry("AudioGain", 28000),
 		intEntry("TunerBandwidth", 15000),
 	}}
+}
+
+func TestNarrowFMProcessorFrequencyShiftRebasesCarrier(t *testing.T) {
+	const inputSampleRate = 16000.0
+	const targetFrequency = 146520000
+	const centerFrequency = 146530000
+	const offsetHz = centerFrequency - targetFrequency
+
+	shifted, err := newNarrowFMProcessor(narrowFMSettings{
+		InputSampleRate:      16000,
+		OutputSampleRate:     8000,
+		TargetFrequencyHz:    targetFrequency,
+		CenterFrequencyHz:    centerFrequency,
+		FMDeviationHz:        1000,
+		LowpassHz:            3000,
+		SquelchThresholdDBFS: 0,
+		SquelchSNRThreshold:  0,
+		AmpFactor:            1,
+	})
+	if err != nil {
+		t.Fatalf("newNarrowFMProcessor() error = %v", err)
+	}
+
+	unshifted, err := newNarrowFMProcessor(narrowFMSettings{
+		InputSampleRate:      16000,
+		OutputSampleRate:     8000,
+		TargetFrequencyHz:    targetFrequency,
+		CenterFrequencyHz:    targetFrequency,
+		FMDeviationHz:        1000,
+		LowpassHz:            3000,
+		SquelchThresholdDBFS: 0,
+		SquelchSNRThreshold:  0,
+		AmpFactor:            1,
+	})
+	if err != nil {
+		t.Fatalf("newNarrowFMProcessor() error = %v", err)
+	}
+
+	shiftedEnergy := 0.0
+	unshiftedEnergy := 0.0
+	for sample := 0; sample < 4000; sample++ {
+		phase := 2 * math.Pi * offsetHz * float64(sample) / inputSampleRate
+		i := math.Cos(phase)
+		q := math.Sin(phase)
+
+		shiftedAudio, shiftedEmitted, shiftedOpen := shifted.processIQ(i, q)
+		if shiftedEmitted && shiftedOpen {
+			shiftedEnergy += shiftedAudio * shiftedAudio
+		}
+
+		unshiftedAudio, unshiftedEmitted, unshiftedOpen := unshifted.processIQ(i, q)
+		if unshiftedEmitted && unshiftedOpen {
+			unshiftedEnergy += unshiftedAudio * unshiftedAudio
+		}
+	}
+
+	if shiftedEnergy >= unshiftedEnergy*0.25 {
+		t.Fatalf("frequency shift did not sufficiently reduce demodulated energy: shifted=%f unshifted=%f", shiftedEnergy, unshiftedEnergy)
+	}
+}
+
+func TestNarrowFMProcessorKeepsNegativeFrequencyShiftPhaseBounded(t *testing.T) {
+	processor, err := newNarrowFMProcessor(narrowFMSettings{
+		InputSampleRate:      48000,
+		OutputSampleRate:     48000,
+		TargetFrequencyHz:    146520000,
+		CenterFrequencyHz:    146510000,
+		FMDeviationHz:        3000,
+		SquelchSNRThreshold:  0,
+		AmpFactor:            1,
+	})
+	if err != nil {
+		t.Fatalf("newNarrowFMProcessor() error = %v", err)
+	}
+
+	for sample := 0; sample < 1000; sample++ {
+		processor.processIQ(0, 0)
+	}
+
+	if math.Abs(processor.frequencyShiftPhase) > math.Pi+1e-12 {
+		t.Fatalf("negative frequency-shift phase = %f, want it within [-pi, pi]", processor.frequencyShiftPhase)
+	}
 }
