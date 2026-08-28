@@ -96,24 +96,34 @@ class _DashboardPageState extends State<DashboardPage> {
 
   Future<_DashboardData> _fetchDashboardData() async {
     if (widget.initialTopology != null) {
-      return _DashboardData(topology: widget.initialTopology!, connections: const []);
+      return _DashboardData(
+        topology: widget.initialTopology!,
+        connections: const [],
+      );
     }
 
     final baseUrl = _getBaseUrl();
-    final topologyRes = await http.get(Uri.parse('$baseUrl/api/public/topology'));
+    final topologyRes = await http.get(
+      Uri.parse('$baseUrl/api/public/topology'),
+    );
     if (topologyRes.statusCode != 200) {
       throw Exception('Failed to load topology: ${topologyRes.statusCode}');
     }
 
     final topology = TopologyResponse.fromJson(jsonDecode(topologyRes.body));
 
-    final connectionsRes = await http.get(Uri.parse('$baseUrl/api/public/connections'));
+    final connectionsRes = await http.get(
+      Uri.parse('$baseUrl/api/public/connections'),
+    );
     List<TopologyConnection> connections = const [];
     if (connectionsRes.statusCode == 200) {
       final decoded = jsonDecode(connectionsRes.body);
       if (decoded is Map<String, dynamic> && decoded['connections'] is List) {
         connections = (decoded['connections'] as List)
-            .map((entry) => TopologyConnection.fromJson(entry as Map<String, dynamic>))
+            .map(
+              (entry) =>
+                  TopologyConnection.fromJson(entry as Map<String, dynamic>),
+            )
             .toList();
       }
     }
@@ -150,65 +160,84 @@ class _DashboardPageState extends State<DashboardPage> {
                   color: const Color(0xFF1C2435),
                   child: Padding(
                     padding: const EdgeInsets.all(24),
-                    child: Text('Unable to load dashboard\n$_errorMessage', textAlign: TextAlign.center),
+                    child: Text(
+                      'Unable to load dashboard\n$_errorMessage',
+                      textAlign: TextAlign.center,
+                    ),
                   ),
                 ),
               );
             }
 
-            final data = _dashboardData ??
+            final data =
+                _dashboardData ??
                 _DashboardData(
                   topology: TopologyResponse.empty(),
                   connections: const [],
                 );
 
-            return Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
+            return SingleChildScrollView(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 12,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        Text(
                           'Dashboard',
-                          style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white,
-                            letterSpacing: 0.5,
-                          ),
+                          style: Theme.of(context).textTheme.headlineMedium
+                              ?.copyWith(
+                                fontWeight: FontWeight.w700,
+                                color: Colors.white,
+                                letterSpacing: 0.5,
+                              ),
                         ),
-                      ),
-                      _MetricBadge(label: 'Listen', value: '${data.topology.listen.length}'),
-                      const SizedBox(width: 12),
-                      _MetricBadge(label: 'Broadcast', value: '${data.topology.broadcast.length}'),
-                      const SizedBox(width: 12),
-                      _MetricBadge(label: 'Active', value: '${_countActive(data.topology)}'),
-                      const SizedBox(width: 12),
-                      IconButton(
-                        onPressed: () => _showAdminPanel(context),
-                        tooltip: 'Admin panel',
-                        style: IconButton.styleFrom(
-                          backgroundColor: const Color(0xFF111B2B),
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          padding: const EdgeInsets.all(12),
+                        _MetricBadge(
+                          label: 'Listen',
+                          value: '${data.topology.listen.length}',
                         ),
-                        icon: const Icon(Icons.settings_outlined),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 24),
-                  Expanded(
-                    child: TopologyDiagram(
-                      topology: data.topology,
-                      connections: data.connections,
+                        _MetricBadge(
+                          label: 'Interface',
+                          value: '${data.topology.interfaceNodes.length}',
+                        ),
+                        _MetricBadge(
+                          label: 'Broadcast',
+                          value: '${data.topology.broadcast.length}',
+                        ),
+                        _MetricBadge(
+                          label: 'Active',
+                          value: '${_countActive(data.topology)}',
+                        ),
+                        IconButton(
+                          onPressed: () => _showAdminPanel(context),
+                          tooltip: 'Admin panel',
+                          style: IconButton.styleFrom(
+                            backgroundColor: const Color(0xFF111B2B),
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            padding: const EdgeInsets.all(12),
+                          ),
+                          icon: const Icon(Icons.settings_outlined),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 24),
+                    SizedBox(
+                      height: 525,
+                      child: TopologyDiagram(
+                        topology: data.topology,
+                        connections: data.connections,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             );
           }(),
@@ -228,7 +257,10 @@ class _DashboardPageState extends State<DashboardPage> {
       builder: (dialogContext) {
         return AlertDialog(
           backgroundColor: const Color(0xFF101A2E),
-          title: const Text('Admin login', style: TextStyle(color: Colors.white)),
+          title: const Text(
+            'Admin login',
+            style: TextStyle(color: Colors.white),
+          ),
           content: SizedBox(
             width: 360,
             child: Column(
@@ -266,7 +298,9 @@ class _DashboardPageState extends State<DashboardPage> {
                 final password = passwordController.text;
                 if (username.isEmpty || password.isEmpty) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Username and password are required')),
+                    const SnackBar(
+                      content: Text('Username and password are required'),
+                    ),
                   );
                   return;
                 }
@@ -284,7 +318,9 @@ class _DashboardPageState extends State<DashboardPage> {
                   if (!mounted) return;
                   if (response.statusCode != 200) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Invalid admin credentials')),
+                      const SnackBar(
+                        content: Text('Invalid admin credentials'),
+                      ),
                     );
                     return;
                   }
@@ -293,20 +329,28 @@ class _DashboardPageState extends State<DashboardPage> {
 
                   final nodesResponse = await http.get(
                     Uri.parse('$baseUrl/api/admin/nodes'),
-                    headers: {'Authorization': _basicAuthHeader(username, password)},
+                    headers: {
+                      'Authorization': _basicAuthHeader(username, password),
+                    },
                   );
 
                   if (!mounted) return;
                   if (nodesResponse.statusCode != 200) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Unable to load connected nodes')),
+                      const SnackBar(
+                        content: Text('Unable to load connected nodes'),
+                      ),
                     );
                     return;
                   }
 
                   final decoded = jsonDecode(nodesResponse.body);
                   final nodes = (decoded as List)
-                      .map((entry) => NodeConfigViewModel.fromJson(entry as Map<String, dynamic>))
+                      .map(
+                        (entry) => NodeConfigViewModel.fromJson(
+                          entry as Map<String, dynamic>,
+                        ),
+                      )
                       .toList();
 
                   showModalBottomSheet(
@@ -322,7 +366,9 @@ class _DashboardPageState extends State<DashboardPage> {
                 } catch (_) {
                   if (!mounted) return;
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Unable to reach the admin API')),
+                    const SnackBar(
+                      content: Text('Unable to reach the admin API'),
+                    ),
                   );
                 }
               },
@@ -367,12 +413,20 @@ class _MetricBadge extends StatelessWidget {
         children: [
           Text(
             label,
-            style: const TextStyle(color: Colors.white60, fontSize: 11, letterSpacing: 0.8),
+            style: const TextStyle(
+              color: Colors.white60,
+              fontSize: 11,
+              letterSpacing: 0.8,
+            ),
           ),
           const SizedBox(height: 4),
           Text(
             value,
-            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 20),
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w700,
+              fontSize: 20,
+            ),
           ),
         ],
       ),
@@ -382,15 +436,27 @@ class _MetricBadge extends StatelessWidget {
 
 int _countActive(TopologyResponse topology) {
   final activeListen = topology.listen.where((node) => node.active).length;
-  final activeBroadcast = topology.broadcast.where((node) => node.active).length;
-  return activeListen + activeBroadcast + (topology.server.active ? 1 : 0);
+  final activeInterface = topology.interfaceNodes
+      .where((node) => node.active)
+      .length;
+  final activeBroadcast = topology.broadcast
+      .where((node) => node.active)
+      .length;
+  return activeListen +
+      activeInterface +
+      activeBroadcast +
+      (topology.server.active ? 1 : 0);
 }
 
 class TopologyDiagram extends StatelessWidget {
   final TopologyResponse topology;
   final List<TopologyConnection> connections;
 
-  const TopologyDiagram({super.key, required this.topology, required this.connections});
+  const TopologyDiagram({
+    super.key,
+    required this.topology,
+    required this.connections,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -404,31 +470,41 @@ class TopologyDiagram extends StatelessWidget {
 
         final listenWidth = topology.listen.isEmpty
             ? boxWidth
-            : topology.listen.length * boxWidth + (topology.listen.length - 1) * rowGap;
+            : topology.listen.length * boxWidth +
+                  (topology.listen.length - 1) * rowGap;
+        final interfaceWidth = topology.interfaceNodes.isEmpty
+            ? boxWidth
+            : topology.interfaceNodes.length * boxWidth +
+                  (topology.interfaceNodes.length - 1) * rowGap;
         final broadcastWidth = topology.broadcast.isEmpty
             ? boxWidth
-            : topology.broadcast.length * boxWidth + (topology.broadcast.length - 1) * rowGap;
+            : topology.broadcast.length * boxWidth +
+                  (topology.broadcast.length - 1) * rowGap;
 
         final listenStart = (constraints.maxWidth - listenWidth) / 2;
+        final interfaceStart = (constraints.maxWidth - interfaceWidth) / 2;
         final broadcastStart = (constraints.maxWidth - broadcastWidth) / 2;
         final serverX = (constraints.maxWidth - serverWidth) / 2;
 
-        final listenRowTop = 40.0;
-        final serverRowTop = 180.0;
-        final broadcastRowTop = 325.0;
+        final listenRowTop = 20.0;
+        final interfaceRowTop = 140.0;
+        final serverRowTop = 270.0;
+        final broadcastRowTop = 410.0;
 
         return SizedBox(
           width: constraints.maxWidth,
-          height: 460,
+          height: 525,
           child: Stack(
             children: [
               Positioned.fill(
                 child: CustomPaint(
                   painter: TopologyPainter(
                     listenNodes: topology.listen,
+                    interfaceNodes: topology.interfaceNodes,
                     server: topology.server,
                     broadcastNodes: topology.broadcast,
                     listenRowTop: listenRowTop,
+                    interfaceRowTop: interfaceRowTop,
                     serverRowTop: serverRowTop,
                     broadcastRowTop: broadcastRowTop,
                     boxWidth: boxWidth,
@@ -436,6 +512,7 @@ class TopologyDiagram extends StatelessWidget {
                     serverWidth: serverWidth,
                     serverHeight: serverHeight,
                     listenStart: listenStart,
+                    interfaceStart: interfaceStart,
                     broadcastStart: broadcastStart,
                     serverX: serverX,
                   ),
@@ -460,8 +537,43 @@ class TopologyDiagram extends StatelessWidget {
                           ),
                         ]
                       : topology.listen
-                          .map((node) => _NodeCard(node: node, width: boxWidth, height: boxHeight))
-                          .toList(),
+                            .map(
+                              (node) => _NodeCard(
+                                node: node,
+                                width: boxWidth,
+                                height: boxHeight,
+                              ),
+                            )
+                            .toList(),
+                ),
+              ),
+              Positioned(
+                top: interfaceRowTop,
+                left: interfaceStart,
+                child: Wrap(
+                  spacing: rowGap,
+                  children: topology.interfaceNodes.isEmpty
+                      ? [
+                          _NodeCard(
+                            node: const PublicNode(
+                              peerId: 0,
+                              name: 'No interface nodes',
+                              active: false,
+                              rssi: null,
+                              snr: null,
+                            ),
+                            compact: true,
+                          ),
+                        ]
+                      : topology.interfaceNodes
+                            .map(
+                              (node) => _NodeCard(
+                                node: node,
+                                width: boxWidth,
+                                height: boxHeight,
+                              ),
+                            )
+                            .toList(),
                 ),
               ),
               Positioned(
@@ -493,8 +605,14 @@ class TopologyDiagram extends StatelessWidget {
                           ),
                         ]
                       : topology.broadcast
-                          .map((node) => _NodeCard(node: node, width: boxWidth, height: boxHeight))
-                          .toList(),
+                            .map(
+                              (node) => _NodeCard(
+                                node: node,
+                                width: boxWidth,
+                                height: boxHeight,
+                              ),
+                            )
+                            .toList(),
                 ),
               ),
             ],
@@ -507,9 +625,11 @@ class TopologyDiagram extends StatelessWidget {
 
 class TopologyPainter extends CustomPainter {
   final List<PublicNode> listenNodes;
+  final List<PublicNode> interfaceNodes;
   final PublicNode server;
   final List<PublicNode> broadcastNodes;
   final double listenRowTop;
+  final double interfaceRowTop;
   final double serverRowTop;
   final double broadcastRowTop;
   final double boxWidth;
@@ -517,14 +637,17 @@ class TopologyPainter extends CustomPainter {
   final double serverWidth;
   final double serverHeight;
   final double listenStart;
+  final double interfaceStart;
   final double broadcastStart;
   final double serverX;
 
   TopologyPainter({
     required this.listenNodes,
+    required this.interfaceNodes,
     required this.server,
     required this.broadcastNodes,
     required this.listenRowTop,
+    required this.interfaceRowTop,
     required this.serverRowTop,
     required this.broadcastRowTop,
     required this.boxWidth,
@@ -532,6 +655,7 @@ class TopologyPainter extends CustomPainter {
     required this.serverWidth,
     required this.serverHeight,
     required this.listenStart,
+    required this.interfaceStart,
     required this.broadcastStart,
     required this.serverX,
   });
@@ -553,7 +677,10 @@ class TopologyPainter extends CustomPainter {
 
     for (var i = 0; i < listenNodes.length; i++) {
       final node = listenNodes[i];
-      final start = Offset(listenStart + (i * (boxWidth + 18)) + (boxWidth / 2), listenRowTop + boxHeight);
+      final start = Offset(
+        listenStart + (i * (boxWidth + 18)) + (boxWidth / 2),
+        listenRowTop + boxHeight,
+      );
       final end = Offset(serverX + (serverWidth / 2), serverRowTop);
       final path = Path();
       path.moveTo(start.dx, start.dy);
@@ -568,10 +695,36 @@ class TopologyPainter extends CustomPainter {
       canvas.drawPath(path, node.active ? activePaint : mutedPaint);
     }
 
+    for (var i = 0; i < interfaceNodes.length; i++) {
+      final node = interfaceNodes[i];
+      final start = Offset(
+        interfaceStart + (i * (boxWidth + 18)) + (boxWidth / 2),
+        interfaceRowTop + boxHeight,
+      );
+      final end = Offset(serverX + (serverWidth / 2), serverRowTop);
+      final path = Path();
+      path.moveTo(start.dx, start.dy);
+      path.cubicTo(
+        start.dx,
+        start.dy + 36,
+        end.dx,
+        end.dy - 36,
+        end.dx,
+        end.dy,
+      );
+      canvas.drawPath(path, node.active ? activePaint : mutedPaint);
+    }
+
     for (var i = 0; i < broadcastNodes.length; i++) {
       final node = broadcastNodes[i];
-      final start = Offset(serverX + (serverWidth / 2), serverRowTop + serverHeight);
-      final end = Offset(broadcastStart + (i * (boxWidth + 18)) + (boxWidth / 2), broadcastRowTop);
+      final start = Offset(
+        serverX + (serverWidth / 2),
+        serverRowTop + serverHeight,
+      );
+      final end = Offset(
+        broadcastStart + (i * (boxWidth + 18)) + (boxWidth / 2),
+        broadcastRowTop,
+      );
       final path = Path();
       path.moveTo(start.dx, start.dy);
       path.cubicTo(
@@ -608,7 +761,9 @@ class _NodeCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final active = node.active;
-    final borderColor = active ? const Color(0xFFFF4D4D) : Colors.white.withValues(alpha: 0.12);
+    final borderColor = active
+        ? const Color(0xFFFF4D4D)
+        : Colors.white.withValues(alpha: 0.12);
 
     return Container(
       width: width,
@@ -620,7 +775,8 @@ class _NodeCard extends StatelessWidget {
         border: Border.all(color: borderColor, width: active ? 1.4 : 1),
         boxShadow: [
           BoxShadow(
-            color: (active ? const Color(0xFFFF4D4D) : const Color(0xFF3B4658)).withValues(alpha: 0.25),
+            color: (active ? const Color(0xFFFF4D4D) : const Color(0xFF3B4658))
+                .withValues(alpha: 0.25),
             blurRadius: active ? 18 : 10,
             spreadRadius: active ? 0.5 : 0,
           ),
@@ -637,7 +793,9 @@ class _NodeCard extends StatelessWidget {
                 height: 10,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: active ? const Color(0xFFFF4D4D) : const Color(0xFF69778B),
+                  color: active
+                      ? const Color(0xFFFF4D4D)
+                      : const Color(0xFF69778B),
                 ),
               ),
               const SizedBox(width: 8),
@@ -645,6 +803,7 @@ class _NodeCard extends StatelessWidget {
                 child: Text(
                   node.name,
                   overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
                   style: const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.w600,
@@ -656,12 +815,16 @@ class _NodeCard extends StatelessWidget {
           ),
           if (!isServer && (node.rssi != null || node.snr != null)) ...[
             const SizedBox(height: 12),
-            Text(
-              'RSSI ${node.rssi?.toStringAsFixed(0) ?? 'n/a'} dB | SNR ${node.snr?.toStringAsFixed(1) ?? 'n/a'} dB',
-              style: const TextStyle(
-                color: Color(0xFFA9B7C9),
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
+            FittedBox(
+              alignment: Alignment.centerLeft,
+              fit: BoxFit.scaleDown,
+              child: Text(
+                'RSSI ${node.rssi?.toStringAsFixed(0) ?? 'n/a'} dB | SNR ${node.snr?.toStringAsFixed(1) ?? 'n/a'} dB',
+                style: const TextStyle(
+                  color: Color(0xFFA9B7C9),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
             ),
           ] else if (isServer) ...[
@@ -683,11 +846,13 @@ class _NodeCard extends StatelessWidget {
 
 class TopologyResponse {
   final List<PublicNode> listen;
+  final List<PublicNode> interfaceNodes;
   final PublicNode server;
   final List<PublicNode> broadcast;
 
   const TopologyResponse({
     required this.listen,
+    required this.interfaceNodes,
     required this.server,
     required this.broadcast,
   });
@@ -695,20 +860,35 @@ class TopologyResponse {
   factory TopologyResponse.empty() {
     return TopologyResponse(
       listen: const [],
-      server: const PublicNode(peerId: 0, name: 'Server', active: false, rssi: null, snr: null),
+      interfaceNodes: const [],
+      server: const PublicNode(
+        peerId: 0,
+        name: 'Server',
+        active: false,
+        rssi: null,
+        snr: null,
+      ),
       broadcast: const [],
     );
   }
 
   factory TopologyResponse.fromJson(Map<String, dynamic> json) {
     final listenRaw = json['listen'] as List? ?? const [];
+    final interfaceRaw = json['interface'] as List? ?? const [];
     final broadcastRaw = json['broadcast'] as List? ?? const [];
     final serverRaw = json['server'] as Map<String, dynamic>? ?? const {};
 
     return TopologyResponse(
-      listen: listenRaw.map((entry) => PublicNode.fromJson(entry as Map<String, dynamic>)).toList(),
+      listen: listenRaw
+          .map((entry) => PublicNode.fromJson(entry as Map<String, dynamic>))
+          .toList(),
+      interfaceNodes: interfaceRaw
+          .map((entry) => PublicNode.fromJson(entry as Map<String, dynamic>))
+          .toList(),
       server: PublicNode.fromJson(serverRaw),
-      broadcast: broadcastRaw.map((entry) => PublicNode.fromJson(entry as Map<String, dynamic>)).toList(),
+      broadcast: broadcastRaw
+          .map((entry) => PublicNode.fromJson(entry as Map<String, dynamic>))
+          .toList(),
     );
   }
 }
@@ -720,7 +900,13 @@ class PublicNode {
   final double? rssi;
   final double? snr;
 
-  const PublicNode({required this.peerId, required this.name, required this.active, required this.rssi, required this.snr});
+  const PublicNode({
+    required this.peerId,
+    required this.name,
+    required this.active,
+    required this.rssi,
+    required this.snr,
+  });
 
   factory PublicNode.fromJson(Map<String, dynamic> json) {
     final peerIdValue = (json['peerId'] as num?)?.toInt() ?? 0;
@@ -735,7 +921,8 @@ class PublicNode {
       parsedSnr = (rawSnr as num).toDouble();
     }
 
-    final requestedName = (json['name'] as String? ?? 'Peer $peerIdValue').trim();
+    final requestedName = (json['name'] as String? ?? 'Peer $peerIdValue')
+        .trim();
 
     return PublicNode(
       peerId: peerIdValue,
@@ -809,9 +996,13 @@ class NodeConfigViewModel {
       lastHeartbeatAgo: json['lastHeartbeatAgo'] as String? ?? '',
       active: json['active'] as bool? ?? false,
       rssi: (json['rssi'] is num) ? (json['rssi'] as num).toDouble() : null,
-        snr: (json['snr'] is num) ? (json['snr'] as num).toDouble() : null,
+      snr: (json['snr'] is num) ? (json['snr'] as num).toDouble() : null,
       config: rawConfig
-          .map((entry) => NodeConfigEntryViewModel.fromJson(entry as Map<String, dynamic>))
+          .map(
+            (entry) => NodeConfigEntryViewModel.fromJson(
+              entry as Map<String, dynamic>,
+            ),
+          )
           .toList(),
     );
   }
@@ -821,11 +1012,13 @@ class NodeConfigEntryViewModel {
   final String key;
   final String type;
   final String value;
+  final String valueType;
 
   const NodeConfigEntryViewModel({
     required this.key,
     required this.type,
     required this.value,
+    required this.valueType,
   });
 
   factory NodeConfigEntryViewModel.fromJson(Map<String, dynamic> json) {
@@ -833,6 +1026,7 @@ class NodeConfigEntryViewModel {
       key: json['key'] as String? ?? '',
       type: json['type'] as String? ?? '',
       value: json['value'] as String? ?? '',
+      valueType: json['valueType'] as String? ?? 'string',
     );
   }
 }
@@ -856,6 +1050,43 @@ class AdminPanelSheet extends StatefulWidget {
 class _AdminPanelSheetState extends State<AdminPanelSheet> {
   final Map<String, TextEditingController> _controllers = {};
   final Map<String, String> _saveQueue = {};
+
+  String _entryKey(NodeConfigViewModel node, NodeConfigEntryViewModel entry) {
+    return '${node.peerId}:${entry.key}:${entry.type}';
+  }
+
+  TextEditingController _controllerFor(
+    NodeConfigViewModel node,
+    NodeConfigEntryViewModel entry,
+  ) {
+    final key = _entryKey(node, entry);
+    return _controllers.putIfAbsent(
+      key,
+      () => TextEditingController(text: entry.value),
+    );
+  }
+
+  void _queueValue(
+    NodeConfigViewModel node,
+    NodeConfigEntryViewModel entry,
+    String value,
+  ) {
+    _saveQueue[_entryKey(node, entry)] = value;
+  }
+
+  TextInputType _keyboardTypeFor(NodeConfigEntryViewModel entry) {
+    switch (entry.valueType) {
+      case 'int':
+        return const TextInputType.numberWithOptions(signed: true);
+      case 'float':
+        return const TextInputType.numberWithOptions(
+          decimal: true,
+          signed: true,
+        );
+      default:
+        return TextInputType.text;
+    }
+  }
 
   @override
   void dispose() {
@@ -913,7 +1144,9 @@ class _AdminPanelSheetState extends State<AdminPanelSheet> {
                         decoration: BoxDecoration(
                           color: const Color(0xFF121F32),
                           borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.08),
+                          ),
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -925,7 +1158,9 @@ class _AdminPanelSheetState extends State<AdminPanelSheet> {
                                   height: 10,
                                   decoration: BoxDecoration(
                                     shape: BoxShape.circle,
-                                    color: node.active ? const Color(0xFFFF4D4D) : const Color(0xFF69778B),
+                                    color: node.active
+                                        ? const Color(0xFFFF4D4D)
+                                        : const Color(0xFF69778B),
                                   ),
                                 ),
                                 const SizedBox(width: 8),
@@ -950,11 +1185,29 @@ class _AdminPanelSheetState extends State<AdminPanelSheet> {
                               ],
                             ),
                             const SizedBox(height: 12),
-                            _InfoRow(label: 'Peer ID', value: node.peerId.toString()),
+                            _InfoRow(
+                              label: 'Peer ID',
+                              value: node.peerId.toString(),
+                            ),
                             _InfoRow(label: 'IP', value: node.remoteAddr),
-                            _InfoRow(label: 'Last heartbeat', value: node.lastHeartbeatAgo.isEmpty ? 'n/a' : node.lastHeartbeatAgo),
-                            _InfoRow(label: 'RSSI', value: node.rssi == null ? 'n/a' : '${node.rssi!.toStringAsFixed(0)} dB'),
-                            _InfoRow(label: 'SNR', value: node.snr == null ? 'n/a' : '${node.snr!.toStringAsFixed(1)} dB'),
+                            _InfoRow(
+                              label: 'Last heartbeat',
+                              value: node.lastHeartbeatAgo.isEmpty
+                                  ? 'n/a'
+                                  : node.lastHeartbeatAgo,
+                            ),
+                            _InfoRow(
+                              label: 'RSSI',
+                              value: node.rssi == null
+                                  ? 'n/a'
+                                  : '${node.rssi!.toStringAsFixed(0)} dB',
+                            ),
+                            _InfoRow(
+                              label: 'SNR',
+                              value: node.snr == null
+                                  ? 'n/a'
+                                  : '${node.snr!.toStringAsFixed(1)} dB',
+                            ),
                             const SizedBox(height: 12),
                             if (node.config.isEmpty)
                               const Text(
@@ -975,33 +1228,88 @@ class _AdminPanelSheetState extends State<AdminPanelSheet> {
                               for (final entry in node.config) ...[
                                 Padding(
                                   padding: const EdgeInsets.only(bottom: 10),
-                                  child: TextFormField(
-                                    initialValue: entry.value,
-                                    onChanged: (value) {
-                                      final key = '${node.peerId}:${entry.key}:${entry.type}';
-                                      _saveQueue[key] = value;
-                                      _controllers[key] = TextEditingController(text: value);
-                                    },
-                                    style: const TextStyle(color: Colors.white),
-                                    decoration: InputDecoration(
-                                      labelText: '${entry.key} (${entry.type})',
-                                      labelStyle: const TextStyle(color: Color(0xFFA9B7C9)),
-                                      filled: true,
-                                      fillColor: const Color(0xFF0D1728),
-                                      border: OutlineInputBorder(
-                                        borderRadius: BorderRadius.circular(12),
-                                        borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
-                                      ),
-                                      enabledBorder: OutlineInputBorder(
-                                        borderRadius: BorderRadius.circular(12),
-                                        borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
-                                      ),
-                                      focusedBorder: OutlineInputBorder(
-                                        borderRadius: BorderRadius.circular(12),
-                                        borderSide: const BorderSide(color: Color(0xFF2DD4BF)),
-                                      ),
-                                    ),
-                                  ),
+                                  child: entry.valueType == 'bool'
+                                      ? SwitchListTile.adaptive(
+                                          contentPadding:
+                                              const EdgeInsets.symmetric(
+                                                horizontal: 12,
+                                              ),
+                                          title: Text(
+                                            entry.key,
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                            ),
+                                          ),
+                                          subtitle: Text(
+                                            '${entry.type} boolean',
+                                            style: const TextStyle(
+                                              color: Color(0xFFA9B7C9),
+                                            ),
+                                          ),
+                                          value:
+                                              (_saveQueue[_entryKey(
+                                                        node,
+                                                        entry,
+                                                      )] ??
+                                                      entry.value)
+                                                  .toLowerCase() ==
+                                              'true',
+                                          onChanged: (value) {
+                                            setState(() {
+                                              _queueValue(
+                                                node,
+                                                entry,
+                                                value.toString(),
+                                              );
+                                            });
+                                          },
+                                        )
+                                      : TextFormField(
+                                          controller: _controllerFor(
+                                            node,
+                                            entry,
+                                          ),
+                                          keyboardType: _keyboardTypeFor(entry),
+                                          onChanged: (value) =>
+                                              _queueValue(node, entry, value),
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                          ),
+                                          decoration: InputDecoration(
+                                            labelText:
+                                                '${entry.key} (${entry.valueType})',
+                                            labelStyle: const TextStyle(
+                                              color: Color(0xFFA9B7C9),
+                                            ),
+                                            filled: true,
+                                            fillColor: const Color(0xFF0D1728),
+                                            border: OutlineInputBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(8),
+                                              borderSide: BorderSide(
+                                                color: Colors.white.withValues(
+                                                  alpha: 0.08,
+                                                ),
+                                              ),
+                                            ),
+                                            enabledBorder: OutlineInputBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(8),
+                                              borderSide: BorderSide(
+                                                color: Colors.white.withValues(
+                                                  alpha: 0.08,
+                                                ),
+                                              ),
+                                            ),
+                                            focusedBorder: OutlineInputBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(8),
+                                              borderSide: const BorderSide(
+                                                color: Color(0xFF2DD4BF),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
                                 ),
                               ],
                             ],
@@ -1017,14 +1325,17 @@ class _AdminPanelSheetState extends State<AdminPanelSheet> {
                 width: double.infinity,
                 child: FilledButton.icon(
                   onPressed: () async {
-                    final baseUrl = Uri.base.origin.isNotEmpty && Uri.base.origin != 'null'
+                    final baseUrl =
+                        Uri.base.origin.isNotEmpty && Uri.base.origin != 'null'
                         ? Uri.base.origin
                         : 'http://localhost:8080';
 
                     final values = _saveQueue.entries.toList();
                     if (values.isEmpty) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('No config values changed')),
+                        const SnackBar(
+                          content: Text('No config values changed'),
+                        ),
                       );
                       return;
                     }
@@ -1044,7 +1355,10 @@ class _AdminPanelSheetState extends State<AdminPanelSheet> {
                         Uri.parse('$baseUrl/api/admin/config'),
                         headers: {
                           'Content-Type': 'application/json',
-                          'Authorization': _basicAuthHeader(widget.username, widget.password),
+                          'Authorization': _basicAuthHeader(
+                            widget.username,
+                            widget.password,
+                          ),
                         },
                         body: jsonEncode({
                           'peerId': peerId,
@@ -1062,11 +1376,16 @@ class _AdminPanelSheetState extends State<AdminPanelSheet> {
                     if (!mounted) return;
                     if (failed) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('One or more config changes failed')),
+                        const SnackBar(
+                          content: Text('One or more config changes failed'),
+                        ),
                       );
                     } else {
+                      setState(_saveQueue.clear);
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Config saved successfully')),
+                        const SnackBar(
+                          content: Text('Config saved successfully'),
+                        ),
                       );
                     }
                   },
@@ -1088,6 +1407,7 @@ class _AdminPanelSheetState extends State<AdminPanelSheet> {
       ),
     );
   }
+
   String _basicAuthHeader(String username, String password) {
     final encoded = base64Encode(utf8.encode('$username:$password'));
     return 'Basic $encoded';

@@ -51,3 +51,58 @@ func TestConfigEntryDefaultValueFormatsFloat(t *testing.T) {
 		t.Errorf("configEntryDefaultValue() = %q, want %q", got, "10.5")
 	}
 }
+
+func TestConfigEntryDefaultValueFormatsBool(t *testing.T) {
+	entry := models.ConfigEntry{
+		Key:  "RouteToBroadcast",
+		Type: models.ApplicationTypeInterface,
+		Default: models.EntryVar{
+			Type: models.EntryTypeBool,
+			Data: true,
+		},
+	}
+	if got := configEntryDefaultValue(entry, ini.Empty().Section("interface")); got != "true" {
+		t.Errorf("configEntryDefaultValue() = %q, want %q", got, "true")
+	}
+}
+
+func TestValidateInterfaceConfig(t *testing.T) {
+	cfg := defaultInterfaceConfig()
+	if err := ValidateInterfaceConfig(cfg); err != nil {
+		t.Fatalf("ValidateInterfaceConfig() error = %v", err)
+	}
+
+	for index := range cfg.Entries {
+		if cfg.Entries[index].Key == "AudioRate" {
+			cfg.Entries[index].Var.Data = 44100
+		}
+		if cfg.Entries[index].Key == "AudioChunkMs" {
+			cfg.Entries[index].Var.Data = 7
+		}
+	}
+	if err := ValidateInterfaceConfig(cfg); err == nil {
+		t.Fatal("ValidateInterfaceConfig() accepted a non-integral audio frame")
+	}
+
+	cfg = defaultInterfaceConfig()
+	for index := range cfg.Entries {
+		if cfg.Entries[index].Key == "Ptt_Pin" {
+			cfg.Entries[index].Var.Data = 17
+		}
+	}
+	if err := ValidateInterfaceConfig(cfg); err == nil {
+		t.Fatal("ValidateInterfaceConfig() accepted matching GPIO pins")
+	}
+}
+
+func defaultInterfaceConfig() models.Config {
+	cfg := models.Config{}
+	for _, entry := range ConfigEntries {
+		if entry.Type != models.ApplicationTypeInterface {
+			continue
+		}
+		entry.Var = entry.Default
+		cfg.Entries = append(cfg.Entries, entry)
+	}
+	return cfg
+}

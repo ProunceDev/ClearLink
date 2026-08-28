@@ -30,15 +30,21 @@ build: ## Build all binaries
 	@mkdir -p $(BINARY_DIR)
 	@$(MAKE) build-web
 	@$(GO) build -o $(BINARY_DIR)/broadcast    ./cmd/broadcast
+	@$(GO) build -o $(BINARY_DIR)/interface    ./cmd/interface
 	@$(GO) build -o $(BINARY_DIR)/listen       ./cmd/listen
 	@$(GO) build -o $(BINARY_DIR)/server       ./cmd/server
 	@$(GO) build -o $(BINARY_DIR)/clearlink    ./cmd/clearlink
-	@chmod +x $(BINARY_DIR)/broadcast $(BINARY_DIR)/listen $(BINARY_DIR)/server $(BINARY_DIR)/clearlink
+	@chmod +x $(BINARY_DIR)/broadcast $(BINARY_DIR)/interface $(BINARY_DIR)/listen $(BINARY_DIR)/server $(BINARY_DIR)/clearlink
 
 build-broadcast: ## Build only the broadcast binary
 	@mkdir -p $(BINARY_DIR)
 	@$(GO) build -o $(BINARY_DIR)/broadcast    ./cmd/broadcast
 	@chmod +x $(BINARY_DIR)/broadcast
+
+build-interface: ## Build only the interface binary
+	@mkdir -p $(BINARY_DIR)
+	@$(GO) build -o $(BINARY_DIR)/interface    ./cmd/interface
+	@chmod +x $(BINARY_DIR)/interface
 
 build-listen: ## Build only the listen binary
 	@mkdir -p $(BINARY_DIR)
@@ -57,9 +63,12 @@ build-clearlink: ## Build only the clearlink binary
 	@$(GO) build -o $(BINARY_DIR)/clearlink    ./cmd/clearlink
 	@chmod +x $(BINARY_DIR)/clearlink
 
-.PHONY: run-broadcast run-listen run-server run-clearlink
+.PHONY: run-broadcast run-interface run-listen run-server run-clearlink
 run-broadcast: build-broadcast ## Build and run the broadcast binary
 	@$(BINARY_DIR)/broadcast $(ARGS)
+
+run-interface: build-interface ## Build and run the interface binary
+	@$(BINARY_DIR)/interface $(ARGS)
 
 run-listen: build-listen ## Build and run the listen binary
 	@$(BINARY_DIR)/listen $(ARGS)

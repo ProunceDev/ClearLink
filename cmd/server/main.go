@@ -107,10 +107,11 @@ func getNodeStatuses() []web.NodeStatus {
 	defer peersMu.RUnlock()
 
 	activeListenPeerID := uint16(activeSourcePeerID.Load())
+	now := time.Now()
 
 	nodes := make([]web.NodeStatus, 0, len(peers))
 	for _, peer := range peers {
-		active := peer.NodeType == models.ApplicationTypeListen && peer.PeerID == activeListenPeerID
+		active := peerIsAudioActiveLocked(peer, now, activeListenPeerID)
 
 		node := web.NodeStatus{
 			PeerID:           peer.PeerID,
@@ -127,9 +128,10 @@ func getNodeStatuses() []web.NodeStatus {
 				continue
 			}
 			node.Config = append(node.Config, web.NodeConfig{
-				Key:   entry.Key,
-				Type:  string(entry.Type),
-				Value: fmt.Sprintf("%v", entry.Var.Data),
+				Key:       entry.Key,
+				Type:      string(entry.Type),
+				Value:     fmt.Sprintf("%v", entry.Var.Data),
+				ValueType: entry.Var.Type.String(),
 			})
 		}
 		if peer.HasRSSI {
@@ -196,6 +198,12 @@ func applyNodeConfigUpdate(peerID uint16, key, applicationType, value string) er
 		targetEntry.Var.Data = parsed
 	case models.EntryTypeString:
 		targetEntry.Var.Data = value
+	case models.EntryTypeBool:
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return errors.New("invalid boolean value")
+		}
+		targetEntry.Var.Data = parsed
 	default:
 		return errors.New("unsupported config entry type")
 	}
@@ -212,6 +220,11 @@ func applyNodeConfigUpdate(peerID uint16, key, applicationType, value string) er
 	if targetEntry.Type == models.ApplicationTypeListen {
 		if err := sdrhelper.ValidateListenConfig(candidateConfig); err != nil {
 			return fmt.Errorf("invalid narrow-FM configuration: %w", err)
+		}
+	}
+	if targetEntry.Type == models.ApplicationTypeInterface {
+		if err := config.ValidateInterfaceConfig(candidateConfig); err != nil {
+			return fmt.Errorf("invalid interface configuration: %w", err)
 		}
 	}
 
@@ -255,6 +268,8 @@ func heartbeatLoop() {
 				if err := network.SendPacket(conn, peer.RemoteAddr, hdr, payload); err != nil {
 					fmt.Printf("Failed to send timeout termination to peer %d: %v\n", id, err)
 				}
+				audioRouter.removePeer(id)
+				activeSourcePeerID.CompareAndSwap(uint32(id), 0)
 				delete(peers, id)
 			} else if !peer.HasSentConf && now.Sub(peer.LastHeartbeat) > 15*time.Second {
 				fmt.Printf("Peer %d has not sent config, disconnecting.\n", id)
@@ -268,6 +283,8 @@ func heartbeatLoop() {
 				if err := network.SendPacket(conn, peer.RemoteAddr, hdr, payload); err != nil {
 					fmt.Printf("Failed to send config-timeout termination to peer %d: %v\n", id, err)
 				}
+				audioRouter.removePeer(id)
+				activeSourcePeerID.CompareAndSwap(uint32(id), 0)
 				delete(peers, id)
 			} else {
 				hdr := &network.Header{
@@ -431,6 +448,8 @@ func networkLoop() {
 					fmt.Printf("Received termination from peer %d at %s. Reason: %s\n", hdr.PeerID, remoteAddr, termPkt.Reason)
 				}
 				peersMu.Lock()
+				audioRouter.removePeer(hdr.PeerID)
+				activeSourcePeerID.CompareAndSwap(uint32(hdr.PeerID), 0)
 				delete(peers, hdr.PeerID)
 				peersMu.Unlock()
 			case network.PacketTypeToServerRSSI:
@@ -440,7 +459,7 @@ func networkLoop() {
 					continue
 				}
 				peersMu.Lock()
-				if peer, ok := peers[hdr.PeerID]; ok {
+				if peer, ok := peers[hdr.PeerID]; ok && peer.NodeType == models.ApplicationTypeListen {
 					peer.LastRSSI = data.RSSI
 					peer.HasRSSI = true
 					if data.HasSNR {
@@ -456,17 +475,14 @@ func networkLoop() {
 					continue
 				}
 				if len(data.Samples) == 0 {
-					wasActive := uint16(activeSourcePeerID.Load()) == hdr.PeerID
-					markListenNodeAudioInactive(hdr.PeerID)
-					if wasActive {
-						activeSourcePeerID.CompareAndSwap(uint32(hdr.PeerID), 0)
-						forwardAudioStopToBroadcastNodes(conn, hdr.PeerID, data)
-					}
+					markAudioSourceInactive(hdr.PeerID)
+					activeSourcePeerID.CompareAndSwap(uint32(hdr.PeerID), 0)
+					audioRouter.removeSource(hdr.PeerID)
 					continue
 				}
-				markListenNodeAudioActivity(hdr.PeerID)
-				refreshActiveAudioSource()
-				forwardAudioToBroadcastNodes(conn, hdr.PeerID, data)
+				if markAudioSourceActivity(hdr.PeerID) {
+					audioRouter.push(hdr.PeerID, data)
+				}
 			default:
 				fmt.Printf("Unknown type %d from %s\n", hdr.Type, remoteAddr)
 			}
@@ -475,11 +491,11 @@ func networkLoop() {
 }
 
 func audioRouterLoop() {
-	ticker := time.NewTicker(10 * time.Millisecond)
+	ticker := time.NewTicker(audioMixFrameDuration)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		refreshActiveAudioSource()
+		routeMixedAudio(conn)
 	}
 }
 
@@ -599,14 +615,14 @@ func findCandidate(candidates []listenSourceCandidate, peerID uint16) (listenSou
 	return listenSourceCandidate{}, false
 }
 
-func markListenNodeAudioActivity(peerID uint16) {
+func markAudioSourceActivity(peerID uint16) bool {
 	now := time.Now()
 	peersMu.Lock()
 	defer peersMu.Unlock()
 
 	peer, exists := peers[peerID]
-	if !exists || peer.NodeType != models.ApplicationTypeListen {
-		return
+	if !exists || (peer.NodeType != models.ApplicationTypeListen && peer.NodeType != models.ApplicationTypeInterface) {
+		return false
 	}
 
 	if !peer.HasAudio {
@@ -614,82 +630,21 @@ func markListenNodeAudioActivity(peerID uint16) {
 		peer.AudioStartedAt = now
 	}
 	peer.LastAudioAt = now
+	return true
 }
 
-func markListenNodeAudioInactive(peerID uint16) {
+func markAudioSourceInactive(peerID uint16) {
 	peersMu.Lock()
 	defer peersMu.Unlock()
 
 	peer, exists := peers[peerID]
-	if !exists || peer.NodeType != models.ApplicationTypeListen {
+	if !exists || (peer.NodeType != models.ApplicationTypeListen && peer.NodeType != models.ApplicationTypeInterface) {
 		return
 	}
 
 	peer.HasAudio = false
 	peer.AudioStartedAt = time.Time{}
 	peer.LastAudioAt = time.Time{}
-}
-
-func forwardAudioToBroadcastNodes(conn *net.UDPConn, sourcePeerID uint16, packet *network.ToAnyAudioChunkPacket) {
-	if uint16(activeSourcePeerID.Load()) != sourcePeerID {
-		return
-	}
-
-	payload, err := packet.Marshal()
-	if err != nil {
-		fmt.Printf("Failed to marshal audio chunk from peer %d: %v\n", sourcePeerID, err)
-		return
-	}
-
-	peersMu.RLock()
-	broadcastPeers := make([]*models.NetworkPeer, 0)
-	for _, peer := range peers {
-		if peer.NodeType != models.ApplicationTypeBroadcast {
-			continue
-		}
-		broadcastPeers = append(broadcastPeers, peer)
-	}
-	peersMu.RUnlock()
-
-	for _, peer := range broadcastPeers {
-		hdr := &network.Header{
-			Type:       network.PacketTypeToAnyAudioChunk,
-			PeerID:     peer.PeerID,
-			PeerSecret: peer.PeerSecret,
-		}
-		if err := network.SendPacket(conn, peer.RemoteAddr, hdr, payload); err != nil {
-			fmt.Printf("Failed to route audio to broadcast peer %d: %v\n", peer.PeerID, err)
-		}
-	}
-}
-
-func forwardAudioStopToBroadcastNodes(conn *net.UDPConn, sourcePeerID uint16, packet *network.ToAnyAudioChunkPacket) {
-	payload, err := packet.Marshal()
-	if err != nil {
-		fmt.Printf("Failed to marshal audio stop packet from peer %d: %v\n", sourcePeerID, err)
-		return
-	}
-
-	peersMu.RLock()
-	broadcastPeers := make([]*models.NetworkPeer, 0)
-	for _, peer := range peers {
-		if peer.NodeType != models.ApplicationTypeBroadcast {
-			continue
-		}
-		broadcastPeers = append(broadcastPeers, peer)
-	}
-	peersMu.RUnlock()
-
-	for _, peer := range broadcastPeers {
-		hdr := &network.Header{
-			Type:       network.PacketTypeToAnyAudioChunk,
-			PeerID:     peer.PeerID,
-			PeerSecret: peer.PeerSecret,
-		}
-		if err := network.SendPacket(conn, peer.RemoteAddr, hdr, payload); err != nil {
-			fmt.Printf("Failed to route audio stop to broadcast peer %d: %v\n", peer.PeerID, err)
-		}
-	}
 }
 
 func absDuration(value time.Duration) time.Duration {

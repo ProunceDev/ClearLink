@@ -2,8 +2,10 @@ package config
 
 import (
 	"clearlink/internal/models"
+	"clearlink/internal/network"
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/ini.v1"
 )
@@ -30,6 +32,20 @@ var ConfigEntries = []models.ConfigEntry{
 	{Key: "BotToken", Type: models.ApplicationTypeBroadcast, Default: models.EntryVar{Type: models.EntryTypeString, Data: ""}},
 	{Key: "GuildID", Type: models.ApplicationTypeBroadcast, Default: models.EntryVar{Type: models.EntryTypeString, Data: ""}},
 	{Key: "VoiceChannelID", Type: models.ApplicationTypeBroadcast, Default: models.EntryVar{Type: models.EntryTypeString, Data: ""}},
+	// INTERFACE
+	{Key: "AuthKey", Type: models.ApplicationTypeInterface, Default: models.EntryVar{Type: models.EntryTypeString, Data: "Default"}},
+	{Key: "ServerPort", Type: models.ApplicationTypeInterface, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 4125}},
+	{Key: "ServerAddr", Type: models.ApplicationTypeInterface, Default: models.EntryVar{Type: models.EntryTypeString, Data: "127.0.0.1"}},
+	{Key: "NodeName", Type: models.ApplicationTypeInterface, Default: models.EntryVar{Type: models.EntryTypeString, Data: "DefaultInterfaceNodeName"}},
+	{Key: "InputDevice", Type: models.ApplicationTypeInterface, Default: models.EntryVar{Type: models.EntryTypeString, Data: "default"}},
+	{Key: "OutputDevice", Type: models.ApplicationTypeInterface, Default: models.EntryVar{Type: models.EntryTypeString, Data: "default"}},
+	{Key: "AudioRate", Type: models.ApplicationTypeInterface, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 48000}},
+	{Key: "AudioChunkMs", Type: models.ApplicationTypeInterface, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 20}},
+	{Key: "Squelch_Pin", Type: models.ApplicationTypeInterface, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 17}},
+	{Key: "Squelch_Active_High", Type: models.ApplicationTypeInterface, Default: models.EntryVar{Type: models.EntryTypeBool, Data: true}},
+	{Key: "Ptt_Pin", Type: models.ApplicationTypeInterface, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 4}},
+	{Key: "Ptt_Active_High", Type: models.ApplicationTypeInterface, Default: models.EntryVar{Type: models.EntryTypeBool, Data: true}},
+	{Key: "RouteToBroadcast", Type: models.ApplicationTypeInterface, Default: models.EntryVar{Type: models.EntryTypeBool, Data: true}},
 	// LISTEN
 	{Key: "AuthKey", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeString, Data: "Default"}},
 	{Key: "ServerPort", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 4125}},
@@ -57,6 +73,8 @@ var ConfigEntries = []models.ConfigEntry{
 	{Key: "Highpass", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 100}},
 	{Key: "Lowpass", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 2500}},
 	{Key: "Tau", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeInt, Data: 200}},
+	{Key: "RouteToBroadcast", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeBool, Data: true}},
+	{Key: "RouteToInterface", Type: models.ApplicationTypeListen, Default: models.EntryVar{Type: models.EntryTypeBool, Data: true}},
 }
 
 func configEntryDefaultValue(entry models.ConfigEntry, section *ini.Section) string {
@@ -78,6 +96,8 @@ func configEntryDefaultValue(entry models.ConfigEntry, section *ini.Section) str
 		return entry.Default.Data.(string)
 	case models.EntryTypeFloat:
 		return fmt.Sprintf("%g", entry.Default.Data.(float64))
+	case models.EntryTypeBool:
+		return fmt.Sprintf("%t", entry.Default.Data.(bool))
 	default:
 		return ""
 	}
@@ -108,6 +128,8 @@ func LoadConfig(path string, app_type models.ApplicationType) (*models.Config, e
 			value = cfgFile.Section(string(app_type)).Key(entry.Key).MustString(entry.Default.Data.(string))
 		case models.EntryTypeFloat:
 			value = cfgFile.Section(string(app_type)).Key(entry.Key).MustFloat64(entry.Default.Data.(float64))
+		case models.EntryTypeBool:
+			value = cfgFile.Section(string(app_type)).Key(entry.Key).MustBool(entry.Default.Data.(bool))
 		}
 
 		cfg.Entries = append(cfg.Entries, models.ConfigEntry{
@@ -195,6 +217,8 @@ func UpdateConfigValue(entry models.ConfigEntry) {
 					cfg.Section(string(entry.Type)).Key(entry.Key).SetValue(entry.Var.Data.(string))
 				case models.EntryTypeFloat:
 					cfg.Section(string(entry.Type)).Key(entry.Key).SetValue(fmt.Sprintf("%g", entry.Var.Data.(float64)))
+				case models.EntryTypeBool:
+					cfg.Section(string(entry.Type)).Key(entry.Key).SetValue(fmt.Sprintf("%t", entry.Var.Data.(bool)))
 				}
 			}
 
@@ -202,4 +226,113 @@ func UpdateConfigValue(entry models.ConfigEntry) {
 			return
 		}
 	}
+}
+
+// ValidateInterfaceConfig verifies that an Interface node can use its soundcard and GPIO settings.
+func ValidateInterfaceConfig(cfg models.Config) error {
+	inputDevice, err := interfaceConfigString(cfg.Entries, "InputDevice")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(inputDevice) == "" {
+		return fmt.Errorf("InputDevice cannot be empty")
+	}
+
+	outputDevice, err := interfaceConfigString(cfg.Entries, "OutputDevice")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(outputDevice) == "" {
+		return fmt.Errorf("OutputDevice cannot be empty")
+	}
+
+	audioRate, err := interfaceConfigInt(cfg.Entries, "AudioRate")
+	if err != nil {
+		return err
+	}
+	if audioRate < 8000 || audioRate > 192000 {
+		return fmt.Errorf("AudioRate %d must be between 8000 and 192000", audioRate)
+	}
+
+	audioChunkMs, err := interfaceConfigInt(cfg.Entries, "AudioChunkMs")
+	if err != nil {
+		return err
+	}
+	if audioChunkMs < 5 || audioChunkMs > 1000 {
+		return fmt.Errorf("AudioChunkMs %d must be between 5 and 1000", audioChunkMs)
+	}
+	if audioRate*audioChunkMs%1000 != 0 {
+		return fmt.Errorf("AudioRate multiplied by AudioChunkMs must be divisible by 1000")
+	}
+	if sampleCount := audioRate * audioChunkMs / 1000; sampleCount > network.MaxAudioChunkSamples {
+		return fmt.Errorf("audio chunk has %d samples, maximum is %d", sampleCount, network.MaxAudioChunkSamples)
+	}
+
+	squelchPin, err := interfaceConfigInt(cfg.Entries, "Squelch_Pin")
+	if err != nil {
+		return err
+	}
+	if squelchPin < 0 {
+		return fmt.Errorf("Squelch_Pin must be non-negative")
+	}
+	pttPin, err := interfaceConfigInt(cfg.Entries, "Ptt_Pin")
+	if err != nil {
+		return err
+	}
+	if pttPin < 0 {
+		return fmt.Errorf("Ptt_Pin must be non-negative")
+	}
+	if squelchPin == pttPin {
+		return fmt.Errorf("Squelch_Pin and Ptt_Pin must be different")
+	}
+
+	for _, key := range []string{"Squelch_Active_High", "Ptt_Active_High", "RouteToBroadcast"} {
+		if _, err := interfaceConfigBool(cfg.Entries, key); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func interfaceConfigString(entries []models.ConfigEntry, key string) (string, error) {
+	for _, entry := range entries {
+		if entry.Type != models.ApplicationTypeInterface || entry.Key != key {
+			continue
+		}
+		value, ok := entry.Var.Data.(string)
+		if !ok {
+			return "", fmt.Errorf("%s must be a string", key)
+		}
+		return value, nil
+	}
+	return "", fmt.Errorf("%s is missing", key)
+}
+
+func interfaceConfigInt(entries []models.ConfigEntry, key string) (int, error) {
+	for _, entry := range entries {
+		if entry.Type != models.ApplicationTypeInterface || entry.Key != key {
+			continue
+		}
+		value, ok := entry.Var.Data.(int)
+		if !ok {
+			return 0, fmt.Errorf("%s must be an integer", key)
+		}
+		return value, nil
+	}
+	return 0, fmt.Errorf("%s is missing", key)
+}
+
+func interfaceConfigBool(entries []models.ConfigEntry, key string) (bool, error) {
+	for _, entry := range entries {
+		if entry.Type != models.ApplicationTypeInterface || entry.Key != key {
+			continue
+		}
+		value, ok := entry.Var.Data.(bool)
+		if !ok {
+			return false, fmt.Errorf("%s must be a boolean", key)
+		}
+		return value, nil
+	}
+	return false, fmt.Errorf("%s is missing", key)
 }

@@ -89,7 +89,7 @@ func main() {
 	if runtime.GOOS != "linux" &&
 		runtime.GOOS != "windows" {
 		fatal(
-			"unsupported operating system: "+
+			"unsupported operating system: " +
 				runtime.GOOS,
 		)
 	}
@@ -98,7 +98,7 @@ func main() {
 		runtime.GOARCH != "amd64" &&
 		runtime.GOARCH != "arm64" {
 		fatal(
-			"unsupported Linux architecture: "+
+			"unsupported Linux architecture: " +
 				runtime.GOARCH,
 		)
 	}
@@ -106,7 +106,7 @@ func main() {
 	if runtime.GOOS == "windows" &&
 		runtime.GOARCH != "amd64" {
 		fatal(
-			"unsupported Windows architecture: "+
+			"unsupported Windows architecture: " +
 				runtime.GOARCH,
 		)
 	}
@@ -241,14 +241,15 @@ func (m *Manager) firstRunSetup() error {
 	info("What type of link are you setting up?")
 	info("  1) Broadcast")
 	info("  2) Listen")
-	info("  3) Server")
+	info("  3) Interface")
+	info("  4) Server")
 	fmt.Println()
 
 	choice, err := promptNumber(
 		reader,
-		"Select [1-3]: ",
+		"Select [1-4]: ",
 		1,
-		3,
+		4,
 	)
 	if err != nil {
 		return err
@@ -260,6 +261,8 @@ func (m *Manager) firstRunSetup() error {
 	case 2:
 		cfg.LinkType = "listen"
 	case 3:
+		cfg.LinkType = "interface"
+	case 4:
 		cfg.LinkType = "server"
 	}
 
@@ -296,6 +299,10 @@ func (m *Manager) configureLinkConfig(reader *bufio.Reader, linkType string) err
 		}
 	case "listen":
 		if err := configureListenSection(reader, cfg); err != nil {
+			return err
+		}
+	case "interface":
+		if err := configureInterfaceSection(reader, cfg); err != nil {
 			return err
 		}
 	default:
@@ -441,6 +448,14 @@ func configureListenSection(reader *bufio.Reader, cfg *ini.File) error {
 	if err != nil {
 		return err
 	}
+	routeToBroadcast, err := promptBoolWithDefault(reader, "RouteToBroadcast", true)
+	if err != nil {
+		return err
+	}
+	routeToInterface, err := promptBoolWithDefault(reader, "RouteToInterface", true)
+	if err != nil {
+		return err
+	}
 
 	section := cfg.Section("listen")
 	section.Key("AuthKey").SetValue(authKey)
@@ -449,7 +464,82 @@ func configureListenSection(reader *bufio.Reader, cfg *ini.File) error {
 	section.Key("NodeName").SetValue(nodeName)
 	section.Key("Frequency").SetValue(strconv.Itoa(frequencyHz))
 	section.Key("CenterFrequency").SetValue(strconv.Itoa(centerFrequencyHz))
+	section.Key("RouteToBroadcast").SetValue(strconv.FormatBool(routeToBroadcast))
+	section.Key("RouteToInterface").SetValue(strconv.FormatBool(routeToInterface))
 
+	return nil
+}
+
+func configureInterfaceSection(reader *bufio.Reader, cfg *ini.File) error {
+	printBanner("Interface Settings")
+
+	authKey, err := promptStringWithDefault(reader, "AuthKey", "CHANGEME")
+	if err != nil {
+		return err
+	}
+	serverPort, err := promptIntWithDefault(reader, "ServerPort", 4125)
+	if err != nil {
+		return err
+	}
+	serverAddr, err := promptRequiredString(reader, "ServerAddr")
+	if err != nil {
+		return err
+	}
+	nodeName, err := promptRequiredString(reader, "NodeName")
+	if err != nil {
+		return err
+	}
+	inputDevice, err := promptStringWithDefault(reader, "InputDevice", "default")
+	if err != nil {
+		return err
+	}
+	outputDevice, err := promptStringWithDefault(reader, "OutputDevice", "default")
+	if err != nil {
+		return err
+	}
+	audioRate, err := promptIntWithDefault(reader, "AudioRate", 48000)
+	if err != nil {
+		return err
+	}
+	audioChunkMs, err := promptIntWithDefault(reader, "AudioChunkMs", 20)
+	if err != nil {
+		return err
+	}
+	squelchPin, err := promptIntWithDefault(reader, "Squelch_Pin", 17)
+	if err != nil {
+		return err
+	}
+	squelchActiveHigh, err := promptBoolWithDefault(reader, "Squelch_Active_High", true)
+	if err != nil {
+		return err
+	}
+	pttPin, err := promptIntWithDefault(reader, "Ptt_Pin", 4)
+	if err != nil {
+		return err
+	}
+	pttActiveHigh, err := promptBoolWithDefault(reader, "Ptt_Active_High", true)
+	if err != nil {
+		return err
+	}
+	routeToBroadcast, err := promptBoolWithDefault(reader, "RouteToBroadcast", true)
+	if err != nil {
+		return err
+	}
+
+	section := cfg.Section("interface")
+	section.Key("AuthKey").SetValue(authKey)
+	section.Key("ServerPort").SetValue(strconv.Itoa(serverPort))
+	section.Key("ServerAddr").SetValue(serverAddr)
+	section.Key("NodeName").SetValue(nodeName)
+	section.Key("InputDevice").SetValue(inputDevice)
+	section.Key("OutputDevice").SetValue(outputDevice)
+	section.Key("AudioRate").SetValue(strconv.Itoa(audioRate))
+	section.Key("AudioChunkMs").SetValue(strconv.Itoa(audioChunkMs))
+	section.Key("Squelch_Pin").SetValue(strconv.Itoa(squelchPin))
+	section.Key("Squelch_Active_High").SetValue(strconv.FormatBool(squelchActiveHigh))
+	section.Key("Ptt_Pin").SetValue(strconv.Itoa(pttPin))
+	section.Key("Ptt_Active_High").SetValue(strconv.FormatBool(pttActiveHigh))
+	section.Key("RouteToBroadcast").SetValue(strconv.FormatBool(routeToBroadcast))
 	return nil
 }
 
@@ -492,6 +582,24 @@ func promptIntWithDefault(reader *bufio.Reader, key string, defaultValue int) (i
 		}
 
 		warn("Please enter a valid integer")
+	}
+}
+
+func promptBoolWithDefault(reader *bufio.Reader, key string, defaultValue bool) (bool, error) {
+	defaultText := strconv.FormatBool(defaultValue)
+	for {
+		text, err := promptRaw(reader, fmt.Sprintf("%s [%s]: ", key, defaultText))
+		if err != nil {
+			return false, err
+		}
+		if text == "" {
+			return defaultValue, nil
+		}
+		value, err := strconv.ParseBool(text)
+		if err == nil {
+			return value, nil
+		}
+		warn("Please enter true or false")
 	}
 }
 
@@ -1158,6 +1266,9 @@ func (m *Manager) startChild() error {
 	if m.child != nil {
 		return nil
 	}
+	if err := m.ensureRuntimeDependencies(); err != nil {
+		return err
+	}
 
 	binaries := m.binariesForLink()
 	if len(binaries) == 0 {
@@ -1274,6 +1385,8 @@ func (m *Manager) binariesForLink() []string {
 		return []string{"broadcast"}
 	case "listen":
 		return []string{"listen"}
+	case "interface":
+		return []string{"interface"}
 	case "server":
 		return []string{"server"}
 	case "broadcast-listen":

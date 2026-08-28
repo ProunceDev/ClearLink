@@ -55,6 +55,12 @@ jobs:
             -o output/broadcast \
             ./cmd/broadcast
 
+          CGO_ENABLED=0 go build \
+            -trimpath \
+            -ldflags="-s -w -X version.Version=${CLEARLINK_VERSION}" \
+            -o output/interface \
+            ./cmd/interface
+
           CGO_ENABLED=1 go build \
             -trimpath \
             -ldflags="-s -w -X version.Version=${CLEARLINK_VERSION} -extldflags=-Wl,-rpath,\$ORIGIN/lib" \
@@ -169,6 +175,12 @@ jobs:
             -ldflags="-s -w -X version.Version=${CLEARLINK_VERSION} -extldflags=-Wl,-rpath,\$ORIGIN/lib" \
             -o output/broadcast \
             ./cmd/broadcast
+
+          CGO_ENABLED=0 go build \
+            -trimpath \
+            -ldflags="-s -w -X version.Version=${CLEARLINK_VERSION}" \
+            -o output/interface \
+            ./cmd/interface
 
           CGO_ENABLED=1 go build \
             -trimpath \

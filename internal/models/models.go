@@ -26,6 +26,7 @@ type ApplicationType string
 const (
 	ApplicationTypeUnknown   ApplicationType = "unknown"
 	ApplicationTypeBroadcast ApplicationType = "broadcast"
+	ApplicationTypeInterface ApplicationType = "interface"
 	ApplicationTypeListen    ApplicationType = "listen"
 	ApplicationTypeServer    ApplicationType = "server"
 )
@@ -36,7 +37,23 @@ const (
 	EntryTypeInt    EntryType = 0
 	EntryTypeString EntryType = 1
 	EntryTypeFloat  EntryType = 2
+	EntryTypeBool   EntryType = 3
 )
+
+func (entryType EntryType) String() string {
+	switch entryType {
+	case EntryTypeInt:
+		return "int"
+	case EntryTypeString:
+		return "string"
+	case EntryTypeFloat:
+		return "float"
+	case EntryTypeBool:
+		return "bool"
+	default:
+		return "unknown"
+	}
+}
 
 type NetworkPeer struct {
 	PeerID         uint16

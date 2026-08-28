@@ -2,6 +2,7 @@ package main
 
 import (
 	"clearlink/internal/network"
+	"clearlink/internal/platform"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -246,14 +247,23 @@ func (rp *RadioPlayer) Close() error {
 }
 
 type GPIOPTT struct {
-	pin  int
-	chip *gpiocdev.Chip
-	line *gpiocdev.Line
+	pin     int
+	enabled bool
+	chip    *gpiocdev.Chip
+	line    *gpiocdev.Line
 }
 
 func NewGPIOPTT(pin int) (*GPIOPTT, error) {
+	return newGPIOPTT(pin, platform.IsRaspberryPi())
+}
+
+func newGPIOPTT(pin int, enabled bool) (*GPIOPTT, error) {
 	if pin < 0 {
 		return nil, fmt.Errorf("invalid GPIO pin: %d", pin)
+	}
+	if !enabled {
+		fmt.Println("GPIO PTT disabled: host is not a Raspberry Pi")
+		return &GPIOPTT{pin: pin}, nil
 	}
 
 	chip, err := gpiocdev.NewChip("gpiochip0")
@@ -268,9 +278,10 @@ func NewGPIOPTT(pin int) (*GPIOPTT, error) {
 	}
 
 	ptt := &GPIOPTT{
-		pin:  pin,
-		chip: chip,
-		line: line,
+		pin:     pin,
+		enabled: true,
+		chip:    chip,
+		line:    line,
 	}
 
 	if err := ptt.Set(false); err != nil {
@@ -283,6 +294,9 @@ func NewGPIOPTT(pin int) (*GPIOPTT, error) {
 }
 
 func (g *GPIOPTT) Set(active bool) error {
+	if !g.enabled {
+		return nil
+	}
 	if g.line == nil {
 		return fmt.Errorf("GPIO line %d is not initialized", g.pin)
 	}
@@ -299,6 +313,9 @@ func (g *GPIOPTT) Set(active bool) error {
 }
 
 func (g *GPIOPTT) Close() error {
+	if !g.enabled {
+		return nil
+	}
 	if err := g.Set(false); err != nil {
 		return err
 	}

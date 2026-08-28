@@ -14,9 +14,10 @@ import (
 var staticFiles embed.FS
 
 type NodeConfig struct {
-	Key   string `json:"key"`
-	Type  string `json:"type"`
-	Value string `json:"value"`
+	Key       string `json:"key"`
+	Type      string `json:"type"`
+	Value     string `json:"value"`
+	ValueType string `json:"valueType"`
 }
 
 type NodeStatus struct {
@@ -42,6 +43,7 @@ type publicNode struct {
 
 type publicTopology struct {
 	Listen    []publicNode `json:"listen"`
+	Interface []publicNode `json:"interface"`
 	Server    publicNode   `json:"server"`
 	Broadcast []publicNode `json:"broadcast"`
 }
@@ -71,11 +73,11 @@ type SaveConfigRequest struct {
 }
 
 type Options struct {
-	Addr           string
-	AdminUsername  string
-	AdminPassword  string
-	GetNodes       func() []NodeStatus
-	SaveConfig     func(peerID uint16, key, applicationType, value string) error
+	Addr          string
+	AdminUsername string
+	AdminPassword string
+	GetNodes      func() []NodeStatus
+	SaveConfig    func(peerID uint16, key, applicationType, value string) error
 }
 
 type Server struct {
@@ -281,16 +283,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func buildPublicTopology(nodes []NodeStatus) publicTopology {
 	topology := publicTopology{
 		Listen:    make([]publicNode, 0),
+		Interface: make([]publicNode, 0),
 		Server:    publicNode{Name: "Server", RSSI: nil},
 		Broadcast: make([]publicNode, 0),
-	}
-
-	var activeListenPeerID uint16
-	for _, node := range nodes {
-		if node.NodeType == "listen" && node.Active {
-			activeListenPeerID = node.PeerID
-			break
-		}
 	}
 
 	for _, node := range nodes {
@@ -302,12 +297,9 @@ func buildPublicTopology(nodes []NodeStatus) publicTopology {
 		switch node.NodeType {
 		case "listen":
 			topology.Listen = append(topology.Listen, public)
+		case "interface":
+			topology.Interface = append(topology.Interface, public)
 		case "broadcast":
-			if activeListenPeerID != 0 {
-				public.Active = node.Active
-			} else {
-				public.Active = false
-			}
 			topology.Broadcast = append(topology.Broadcast, public)
 		}
 	}
@@ -318,26 +310,13 @@ func buildPublicTopology(nodes []NodeStatus) publicTopology {
 func buildPublicConnections(nodes []NodeStatus) publicConnectionsResponse {
 	response := publicConnectionsResponse{Connections: make([]publicConnection, 0, len(nodes)*2)}
 
-	var activeListenPeerID uint16
 	for _, node := range nodes {
-		if node.NodeType == "listen" && node.Active {
-			activeListenPeerID = node.PeerID
-			break
-		}
-	}
-
-	for _, node := range nodes {
-		if node.NodeType != "listen" && node.NodeType != "broadcast" {
+		if node.NodeType != "listen" && node.NodeType != "interface" {
 			continue
 		}
 		color := "#6b7280"
-		if activeListenPeerID != 0 {
-			if node.NodeType == "listen" && node.PeerID == activeListenPeerID {
-				color = "#ef4444"
-			}
-			if node.NodeType == "broadcast" && node.Active {
-				color = "#ef4444"
-			}
+		if node.Active {
+			color = "#ef4444"
 		}
 
 		response.Connections = append(response.Connections, publicConnection{
@@ -354,19 +333,19 @@ func buildPublicConnections(nodes []NodeStatus) publicConnectionsResponse {
 		})
 	}
 
-	if activeListenPeerID == 0 {
-		return response
-	}
-
 	for _, node := range nodes {
-		if node.NodeType != "broadcast" || !node.Active {
+		if node.NodeType != "broadcast" && node.NodeType != "interface" {
 			continue
+		}
+		color := "#6b7280"
+		if node.Active {
+			color = "#ef4444"
 		}
 		response.Connections = append(response.Connections, publicConnection{
 			ID:           fmt.Sprintf("server-to-peer-%d", node.PeerID),
 			FromNodeID:   "server-node",
 			ToNodeID:     fmt.Sprintf("peer-%d", node.PeerID),
-			Color:        "#ef4444",
+			Color:        color,
 			Width:        2,
 			Opacity:      0.85,
 			Curvature:    0.55,

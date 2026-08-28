@@ -32,6 +32,33 @@ func TestConfigFloatUpdateRoundTrip(t *testing.T) {
 	}
 }
 
+func TestConfigBoolUpdateRoundTrip(t *testing.T) {
+	packet := ToClientUpdateConfigEntryPacket{Entry: models.ConfigEntry{
+		Key:  "RouteToBroadcast",
+		Type: models.ApplicationTypeInterface,
+		Var: models.EntryVar{
+			Type: models.EntryTypeBool,
+			Data: true,
+		},
+		Default: models.EntryVar{
+			Type: models.EntryTypeBool,
+			Data: true,
+		},
+	}}
+
+	payload, err := packet.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	decoded, err := UnmarshalToClientUpdateConfigEntry(payload)
+	if err != nil {
+		t.Fatalf("UnmarshalToClientUpdateConfigEntry() error = %v", err)
+	}
+	if got, ok := decoded.Entry.Var.Data.(bool); !ok || !got {
+		t.Fatalf("decoded bool config value = %#v, want true", decoded.Entry.Var.Data)
+	}
+}
+
 func TestAudioChunkPacketRejectsPayloadsLargerThanHeaderLength(t *testing.T) {
 	maximum := ToAnyAudioChunkPacket{Samples: make([]int16, MaxAudioChunkSamples)}
 	if _, err := maximum.Marshal(); err != nil {

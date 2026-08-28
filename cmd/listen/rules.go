@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -163,7 +162,7 @@ func installRTLSDRRules() error {
 		return nil
 	}
 
-	alreadyInstalled, err := sameContentAsInstalled(rtlRulesDestPath)
+	alreadyInstalled, err := requiredRTLSDRRulesInstalled(rtlRulesDestPath)
 	if err == nil && alreadyInstalled {
 		return nil
 	}
@@ -249,10 +248,29 @@ func numberedCommands(commands []string) string {
 	return b.String()
 }
 
-func sameContentAsInstalled(destPath string) (bool, error) {
-	dest, err := os.ReadFile(destPath)
+func requiredRTLSDRRulesInstalled(destPath string) (bool, error) {
+	installedRules, err := os.ReadFile(destPath)
 	if err != nil {
 		return false, err
 	}
-	return bytes.Equal([]byte(rtlRulesContent), dest), nil
+
+	availableRules := normalizedUdevRules(string(installedRules))
+	for rule := range normalizedUdevRules(rtlRulesContent) {
+		if _, found := availableRules[rule]; !found {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func normalizedUdevRules(content string) map[string]struct{} {
+	rules := make(map[string]struct{})
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		rules[strings.Join(strings.Fields(line), " ")] = struct{}{}
+	}
+	return rules
 }
