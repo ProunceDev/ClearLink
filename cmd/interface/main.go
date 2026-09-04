@@ -55,6 +55,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Invalid interface configuration: %v", err)
 	}
+	displayALSAPCMDevices()
 
 	squelch, err := NewSquelchInput(settings.squelchPin, settings.squelchActiveHigh)
 	if err != nil {
@@ -210,13 +211,20 @@ func captureAudioOnce(ctx context.Context, settings interfaceSettings, squelch *
 
 	readErr := forwardCapturedAudio(ctx, stdout, settings, squelch)
 	waitErr := cmd.Wait()
-	if readErr != nil && ctx.Err() == nil {
-		return readErr
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
-	if waitErr != nil && ctx.Err() == nil {
-		return fmt.Errorf("arecord exited: %w", waitErr)
+	return captureAudioError(settings.inputDevice, readErr, waitErr)
+}
+
+func captureAudioError(inputDevice string, readErr, waitErr error) error {
+	if waitErr != nil {
+		return fmt.Errorf("arecord failed for InputDevice %q: %w", inputDevice, waitErr)
 	}
-	return ctx.Err()
+	if readErr != nil {
+		return fmt.Errorf("arecord audio stream for InputDevice %q: %w", inputDevice, readErr)
+	}
+	return nil
 }
 
 func forwardCapturedAudio(ctx context.Context, reader io.Reader, settings interfaceSettings, squelch *SquelchInput) error {
