@@ -7,7 +7,7 @@ import (
 )
 
 func TestNarrowFMSquelchOpensAndCloses(t *testing.T) {
-	squelch, err := newNarrowFMSquelch(16000, -20, 9.54, 0)
+	squelch, err := newNarrowFMSquelch(16000, -20, 9.54, 0, 0)
 	if err != nil {
 		t.Fatalf("newNarrowFMSquelch() error = %v", err)
 	}
@@ -31,7 +31,7 @@ func TestNarrowFMSquelchOpensAndCloses(t *testing.T) {
 }
 
 func TestNarrowFMSquelchCanBeAlwaysOpen(t *testing.T) {
-	squelch, err := newNarrowFMSquelch(16000, 0, 0, 0)
+	squelch, err := newNarrowFMSquelch(16000, 0, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("newNarrowFMSquelch() error = %v", err)
 	}
@@ -78,7 +78,7 @@ func TestNarrowFMSquelchRequiresConfiguredCTCSS(t *testing.T) {
 	const sampleRate = 16000.0
 	const targetTone = 100.0
 
-	squelch, err := newNarrowFMSquelch(sampleRate, -20, 9.54, targetTone)
+	squelch, err := newNarrowFMSquelch(sampleRate, -20, 9.54, targetTone, 0)
 	if err != nil {
 		t.Fatalf("newNarrowFMSquelch() error = %v", err)
 	}
@@ -94,6 +94,38 @@ func TestNarrowFMSquelchRequiresConfiguredCTCSS(t *testing.T) {
 	}
 	if !squelch.isOpen() {
 		t.Fatal("squelch did not open after receiving the configured CTCSS tone")
+	}
+}
+
+func TestNarrowFMSquelchDebouncesConfiguredCTCSS(t *testing.T) {
+	const sampleRate = 16000.0
+
+	squelch, err := newNarrowFMSquelch(sampleRate, 0, 0, 100, 50)
+	if err != nil {
+		t.Fatalf("newNarrowFMSquelch() error = %v", err)
+	}
+	if got, want := squelch.ctcssDebounceSamples, 800; got != want {
+		t.Fatalf("CTCSS debounce samples = %d, want %d", got, want)
+	}
+
+	for sample := 0; sample < squelch.ctcssDebounceSamples-1; sample++ {
+		squelch.updateCTCSSDebounce(true)
+	}
+	if squelch.isOpen() {
+		t.Fatal("CTCSS squelch opened before the debounce interval elapsed")
+	}
+
+	squelch.updateCTCSSDebounce(true)
+	if !squelch.isOpen() {
+		t.Fatal("CTCSS squelch did not open after the debounce interval elapsed")
+	}
+
+	squelch.updateCTCSSDebounce(false)
+	for sample := 0; sample < squelch.ctcssDebounceSamples-1; sample++ {
+		squelch.updateCTCSSDebounce(true)
+	}
+	if squelch.isOpen() {
+		t.Fatal("CTCSS debounce did not reset after the tone was lost")
 	}
 }
 
@@ -201,6 +233,7 @@ func TestValidateListenConfigRejectsInvalidDSPSettings(t *testing.T) {
 		{name: "invalid direct sampling", key: "DirectSampling", value: 3},
 		{name: "negative center frequency", key: "CenterFrequency", value: -1},
 		{name: "non-finite CTCSS", key: "CTCSS", value: math.Inf(1)},
+		{name: "negative CTCSS debounce", key: "CTCSSDebounceMS", value: -1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			candidate := validListenTestConfig()
@@ -244,6 +277,7 @@ func validListenTestConfig() models.Config {
 		intEntry("SquelchThreshold", -20),
 		floatEntry("SquelchSNRThreshold", 9.54),
 		floatEntry("CTCSS", 0),
+		intEntry("CTCSSDebounceMS", 50),
 		floatEntry("Notch", 0),
 		floatEntry("NotchQ", 10),
 		floatEntry("AmpFactor", 1),
@@ -319,13 +353,13 @@ func TestNarrowFMProcessorFrequencyShiftRebasesCarrier(t *testing.T) {
 
 func TestNarrowFMProcessorKeepsNegativeFrequencyShiftPhaseBounded(t *testing.T) {
 	processor, err := newNarrowFMProcessor(narrowFMSettings{
-		InputSampleRate:      48000,
-		OutputSampleRate:     48000,
-		TargetFrequencyHz:    146520000,
-		CenterFrequencyHz:    146510000,
-		FMDeviationHz:        3000,
-		SquelchSNRThreshold:  0,
-		AmpFactor:            1,
+		InputSampleRate:     48000,
+		OutputSampleRate:    48000,
+		TargetFrequencyHz:   146520000,
+		CenterFrequencyHz:   146510000,
+		FMDeviationHz:       3000,
+		SquelchSNRThreshold: 0,
+		AmpFactor:           1,
 	})
 	if err != nil {
 		t.Fatalf("newNarrowFMProcessor() error = %v", err)

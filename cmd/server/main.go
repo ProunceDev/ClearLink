@@ -142,6 +142,9 @@ func getNodeStatuses() []web.NodeStatus {
 			snr := peer.LastSNR
 			node.SNR = &snr
 		}
+		if peer.NodeType == models.ApplicationTypeListen && !peer.LastKeyUp.IsZero() {
+			node.LastKeyUpAgo = now.Sub(peer.LastKeyUp).Round(time.Second).String()
+		}
 		nodes = append(nodes, node)
 	}
 
@@ -628,6 +631,9 @@ func markAudioSourceActivity(peerID uint16) bool {
 	if !peer.HasAudio {
 		peer.HasAudio = true
 		peer.AudioStartedAt = now
+		if peer.NodeType == models.ApplicationTypeListen {
+			peer.LastKeyUp = now
+		}
 	}
 	peer.LastAudioAt = now
 	return true

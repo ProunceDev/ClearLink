@@ -66,6 +66,45 @@ func TestConfigEntryDefaultValueFormatsBool(t *testing.T) {
 	}
 }
 
+func TestListenCTCSSDebounceDefault(t *testing.T) {
+	for _, entry := range ConfigEntries {
+		if entry.Type != models.ApplicationTypeListen || entry.Key != "CTCSSDebounceMS" {
+			continue
+		}
+		if got, want := entry.Default.Data, 50; got != want {
+			t.Fatalf("CTCSSDebounceMS default = %v, want %v", got, want)
+		}
+		return
+	}
+	t.Fatal("CTCSSDebounceMS configuration entry is missing")
+}
+
+func TestBroadcastAudioOutputGainDefault(t *testing.T) {
+	for _, entry := range ConfigEntries {
+		if entry.Type != models.ApplicationTypeBroadcast || entry.Key != "AudioOutputGain" {
+			continue
+		}
+		if got, want := entry.Default.Data, 1.0; got != want {
+			t.Fatalf("AudioOutputGain default = %v, want %v", got, want)
+		}
+		return
+	}
+	t.Fatal("AudioOutputGain configuration entry is missing")
+}
+
+func TestBroadcastHangTimeDefault(t *testing.T) {
+	for _, entry := range ConfigEntries {
+		if entry.Type != models.ApplicationTypeBroadcast || entry.Key != "HangTimeMS" {
+			continue
+		}
+		if got, want := entry.Default.Data, 50; got != want {
+			t.Fatalf("HangTimeMS default = %v, want %v", got, want)
+		}
+		return
+	}
+	t.Fatal("HangTimeMS configuration entry is missing")
+}
+
 func TestValidateInterfaceConfig(t *testing.T) {
 	cfg := defaultInterfaceConfig()
 	if err := ValidateInterfaceConfig(cfg); err != nil {

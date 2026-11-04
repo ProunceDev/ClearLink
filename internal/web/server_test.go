@@ -4,13 +4,16 @@ import "testing"
 
 func TestBuildPublicTopologyIncludesInterfaceNodes(t *testing.T) {
 	topology := buildPublicTopology([]NodeStatus{
-		{PeerID: 1, Name: "RF", NodeType: "listen", Active: true},
+		{PeerID: 1, Name: "RF", NodeType: "listen", Active: true, LastKeyUpAgo: "12s"},
 		{PeerID: 2, Name: "Gateway", NodeType: "interface", Active: true},
 		{PeerID: 3, Name: "Relay", NodeType: "broadcast", Active: true},
 	})
 
 	if len(topology.Listen) != 1 || topology.Listen[0].Name != "RF" {
 		t.Fatalf("listen topology = %+v, want RF node", topology.Listen)
+	}
+	if got, want := topology.Listen[0].LastKeyUpAgo, "12s"; got != want {
+		t.Fatalf("listen last keyup = %q, want %q", got, want)
 	}
 	if len(topology.Interface) != 1 || topology.Interface[0].Name != "Gateway" || !topology.Interface[0].Active {
 		t.Fatalf("interface topology = %+v, want active Gateway node", topology.Interface)

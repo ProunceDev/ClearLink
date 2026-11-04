@@ -16,7 +16,7 @@ import (
 
 const (
 	radioQueueChunks      = 4
-	radioPTTHoldDuration  = 250 * time.Millisecond
+	radioPTTCheckInterval = 10 * time.Millisecond
 	radioProcessStopGrace = 500 * time.Millisecond
 )
 
@@ -31,18 +31,23 @@ type RadioPlayer struct {
 	wg           sync.WaitGroup
 	transmitting bool
 	lastAudioAt  time.Time
+	pttHangTime  time.Duration
 }
 
-func NewRadioPlayer(pttPin int) (*RadioPlayer, error) {
+func NewRadioPlayer(pttPin int, pttHangTime time.Duration) (*RadioPlayer, error) {
+	if pttHangTime < 0 {
+		return nil, fmt.Errorf("PTT hang time must be non-negative")
+	}
 	ptt, err := NewGPIOPTT(pttPin)
 	if err != nil {
 		return nil, err
 	}
 
 	rp := &RadioPlayer{
-		ptt:      ptt,
-		queue:    make(chan *network.ToAnyAudioChunkPacket, radioQueueChunks),
-		quitChan: make(chan struct{}),
+		ptt:         ptt,
+		queue:       make(chan *network.ToAnyAudioChunkPacket, radioQueueChunks),
+		quitChan:    make(chan struct{}),
+		pttHangTime: pttHangTime,
 	}
 
 	rp.wg.Add(1)
@@ -84,7 +89,7 @@ func (rp *RadioPlayer) NotifyTransmitStop() {
 
 func (rp *RadioPlayer) playLoop() {
 	defer rp.wg.Done()
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(radioPTTCheckInterval)
 	defer ticker.Stop()
 
 	for {
@@ -93,7 +98,7 @@ func (rp *RadioPlayer) playLoop() {
 			return
 		case <-ticker.C:
 			rp.mu.Lock()
-			idleTooLong := rp.transmitting && !rp.lastAudioAt.IsZero() && time.Since(rp.lastAudioAt) > radioPTTHoldDuration
+			idleTooLong := rp.transmitting && pttHangTimeExpired(rp.lastAudioAt, time.Now(), rp.pttHangTime)
 			rp.mu.Unlock()
 			if idleTooLong {
 				rp.setPTT(false)
@@ -103,13 +108,31 @@ func (rp *RadioPlayer) playLoop() {
 				return
 			}
 			if len(chunk.Samples) == 0 {
-				rp.setPTT(false)
+				rp.startPTTHang()
 				continue
 			}
 			if err := rp.writeChunk(chunk); err != nil {
 				fmt.Printf("Radio playback error: %v\n", err)
 			}
 		}
+	}
+}
+
+func pttHangTimeExpired(lastAudioAt, now time.Time, hangTime time.Duration) bool {
+	return !lastAudioAt.IsZero() && !now.Before(lastAudioAt.Add(hangTime))
+}
+
+func (rp *RadioPlayer) startPTTHang() {
+	rp.mu.Lock()
+	transmitting := rp.transmitting
+	hangTime := rp.pttHangTime
+	if transmitting && hangTime > 0 {
+		rp.lastAudioAt = time.Now()
+	}
+	rp.mu.Unlock()
+
+	if transmitting && hangTime == 0 {
+		rp.setPTT(false)
 	}
 }
 

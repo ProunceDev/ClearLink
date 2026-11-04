@@ -66,6 +66,7 @@ type NetworkPeer struct {
 	HasAudio       bool
 	AudioStartedAt time.Time
 	LastAudioAt    time.Time
+	LastKeyUp      time.Time
 	Config         Config
 	RemoteAddr     *net.UDPAddr
 	HasSentConf    bool

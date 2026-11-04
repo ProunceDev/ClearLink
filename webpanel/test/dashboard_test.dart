@@ -15,6 +15,7 @@ void main() {
               active: true,
               rssi: -18,
               snr: 12,
+              lastKeyUpAgo: '12s',
             ),
             PublicNode(
               peerId: 11,
@@ -68,6 +69,7 @@ void main() {
     expect(find.text('Server'), findsOneWidget);
     expect(find.text('Relay A'), findsOneWidget);
     expect(find.text('RSSI -18 dB | SNR 12.0 dB'), findsOneWidget);
+    expect(find.text('Last keyup: 12s ago'), findsOneWidget);
     expect(find.text('Interface'), findsOneWidget);
     expect(find.byType(TopologyDiagram), findsOneWidget);
   });

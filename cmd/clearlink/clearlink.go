@@ -388,8 +388,13 @@ func configureBroadcastSection(reader *bufio.Reader, cfg *ini.File) error {
 		if err != nil {
 			return err
 		}
+		hangTimeMS, err := promptIntWithDefault(reader, "HangTimeMS", 50)
+		if err != nil {
+			return err
+		}
 
 		section.Key("Ptt_Pin").SetValue(strconv.Itoa(pttPin))
+		section.Key("HangTimeMS").SetValue(strconv.Itoa(hangTimeMS))
 	}
 
 	if outputType == "DISCORD" {

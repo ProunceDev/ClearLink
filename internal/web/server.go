@@ -30,15 +30,17 @@ type NodeStatus struct {
 	Active           bool         `json:"active"`
 	RSSI             *float64     `json:"rssi"`
 	SNR              *float64     `json:"snr"`
+	LastKeyUpAgo     string       `json:"lastKeyUpAgo"`
 	Config           []NodeConfig `json:"config"`
 }
 
 type publicNode struct {
-	PeerID uint16   `json:"peerId"`
-	Name   string   `json:"name"`
-	Active bool     `json:"active"`
-	RSSI   *float64 `json:"rssi"`
-	SNR    *float64 `json:"snr"`
+	PeerID       uint16   `json:"peerId"`
+	Name         string   `json:"name"`
+	Active       bool     `json:"active"`
+	RSSI         *float64 `json:"rssi"`
+	SNR          *float64 `json:"snr"`
+	LastKeyUpAgo string   `json:"lastKeyUpAgo"`
 }
 
 type publicTopology struct {
@@ -293,7 +295,14 @@ func buildPublicTopology(nodes []NodeStatus) publicTopology {
 		if name == "" {
 			name = fmt.Sprintf("Peer %d", node.PeerID)
 		}
-		public := publicNode{PeerID: node.PeerID, Name: name, Active: node.Active, RSSI: node.RSSI, SNR: node.SNR}
+		public := publicNode{
+			PeerID:       node.PeerID,
+			Name:         name,
+			Active:       node.Active,
+			RSSI:         node.RSSI,
+			SNR:          node.SNR,
+			LastKeyUpAgo: node.LastKeyUpAgo,
+		}
 		switch node.NodeType {
 		case "listen":
 			topology.Listen = append(topology.Listen, public)

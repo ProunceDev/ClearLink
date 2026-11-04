@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"os"
 	"os/signal"
@@ -122,6 +123,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+	audioOutputGain := config.GetConfigValue("AudioOutputGain", models.ApplicationTypeBroadcast).(float64)
+	if math.IsNaN(audioOutputGain) || math.IsInf(audioOutputGain, 0) || audioOutputGain < 0 {
+		log.Fatalf("AudioOutputGain must be a non-negative finite value")
+	}
 	if err := ensureAudioOutputDir(); err != nil {
 		log.Fatalf("Failed to initialize recordings directory: %v", err)
 	}
@@ -143,12 +148,16 @@ func main() {
 		startDiscordInitLoop(ctx, botToken, guildID, voiceChannelID)
 	case "RADIO":
 		pttPin := config.GetConfigValue("Ptt_Pin", models.ApplicationTypeBroadcast).(int)
-		rp, err := NewRadioPlayer(pttPin)
+		hangTimeMS := config.GetConfigValue("HangTimeMS", models.ApplicationTypeBroadcast).(int)
+		if hangTimeMS < 0 {
+			log.Fatalf("HangTimeMS must be non-negative")
+		}
+		rp, err := NewRadioPlayer(pttPin, time.Duration(hangTimeMS)*time.Millisecond)
 		if err != nil {
 			log.Fatalf("Failed to initialize radio player: %v", err)
 		}
 		radioPlayer = rp
-		fmt.Printf("Radio player initialized (PTT GPIO=%d)\n", pttPin)
+		fmt.Printf("Radio player initialized (PTT GPIO=%d, HangTimeMS=%d)\n", pttPin, hangTimeMS)
 	default:
 		log.Fatalf("Unsupported broadcast Type %q. Supported values: DISCORD, RADIO", broadcastType)
 	}
@@ -172,7 +181,7 @@ func main() {
 
 	go heartbeatLoop()
 
-	receiveLoop()
+	receiveLoop(audioOutputGain)
 }
 
 func attemptConnect() {
@@ -235,7 +244,7 @@ func heartbeatLoop() {
 }
 
 // receiveLoop handles incoming packets from the server
-func receiveLoop() {
+func receiveLoop(audioOutputGain float64) {
 	buf := make([]byte, 8192)
 	reassembler := network.NewReassembler()
 
@@ -316,11 +325,12 @@ func receiveLoop() {
 					fmt.Printf("Failed to parse routed audio packet: %v\n", err)
 					continue
 				}
+				outputAudioPkt := applyAudioOutputGain(audioPkt, audioOutputGain)
 				if player := getDiscordPlayer(); player != nil {
-					player.SendAudio(audioPkt)
+					player.SendAudio(outputAudioPkt)
 				}
 				if radioPlayer != nil {
-					radioPlayer.SendAudio(audioPkt)
+					radioPlayer.SendAudio(outputAudioPkt)
 				}
 				queueAudioChunkForRecording(audioPkt)
 			case network.PacketTypeToClientUpdateConfigEntry:
@@ -349,4 +359,26 @@ func receiveLoop() {
 			}
 		}
 	}
+}
+
+func applyAudioOutputGain(chunk *network.ToAnyAudioChunkPacket, gain float64) *network.ToAnyAudioChunkPacket {
+	if chunk == nil {
+		return nil
+	}
+
+	scaled := &network.ToAnyAudioChunkPacket{
+		ChunkNumber: chunk.ChunkNumber,
+		SampleRate:  chunk.SampleRate,
+		Samples:     make([]int16, len(chunk.Samples)),
+	}
+	for index, sample := range chunk.Samples {
+		value := math.Round(float64(sample) * gain)
+		if value > math.MaxInt16 {
+			value = math.MaxInt16
+		} else if value < math.MinInt16 {
+			value = math.MinInt16
+		}
+		scaled.Samples[index] = int16(value)
+	}
+	return scaled
 }

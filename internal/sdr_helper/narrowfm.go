@@ -22,6 +22,7 @@ type narrowFMSettings struct {
 	SquelchThresholdDBFS float64
 	SquelchSNRThreshold  float64
 	CTCSSHz              float64
+	CTCSSDebounceMS      int
 	NotchHz              float64
 	NotchQ               float64
 	AmpFactor            float64
@@ -86,6 +87,9 @@ func (settings narrowFMSettings) validate() error {
 	}
 	if settings.CTCSSHz < 0 || settings.CTCSSHz >= float64(settings.OutputSampleRate)/2 {
 		return fmt.Errorf("CTCSS frequency must be below output Nyquist")
+	}
+	if settings.CTCSSDebounceMS < 0 {
+		return fmt.Errorf("CTCSSDebounceMS must be non-negative")
 	}
 	if settings.NotchHz < 0 || settings.NotchHz >= float64(settings.OutputSampleRate)/2 {
 		return fmt.Errorf("notch frequency must be below output Nyquist")
@@ -241,6 +245,9 @@ func narrowFMSettingsFromEntries(entries []models.ConfigEntry) (narrowFMSettings
 	if settings.CTCSSHz, err = listenConfigFloatFromEntries(entries, "CTCSS"); err != nil {
 		return narrowFMSettings{}, err
 	}
+	if settings.CTCSSDebounceMS, err = listenConfigIntFromEntries(entries, "CTCSSDebounceMS"); err != nil {
+		return narrowFMSettings{}, err
+	}
 	if settings.NotchHz, err = listenConfigFloatFromEntries(entries, "Notch"); err != nil {
 		return narrowFMSettings{}, err
 	}
@@ -319,9 +326,9 @@ func newNarrowFMProcessor(settings narrowFMSettings) (*narrowFMProcessor, error)
 	outputRate := float64(settings.OutputSampleRate)
 	inputRate := float64(settings.InputSampleRate)
 	processor := &narrowFMProcessor{
-		settings:   settings,
-		decimation: settings.InputSampleRate / settings.OutputSampleRate,
-		demodScale: inputRate / (2 * math.Pi * settings.FMDeviationHz),
+		settings:           settings,
+		decimation:         settings.InputSampleRate / settings.OutputSampleRate,
+		demodScale:         inputRate / (2 * math.Pi * settings.FMDeviationHz),
 		frequencyShiftStep: 2 * math.Pi * float64(settings.CenterFrequencyHz-settings.TargetFrequencyHz) / inputRate,
 		discriminatorFilter: []*biquad{
 			newLowpassBiquad(antiAliasCutoff(settings.LowpassHz, outputRate), inputRate, 0.5412),
@@ -350,6 +357,7 @@ func newNarrowFMProcessor(settings narrowFMSettings) (*narrowFMProcessor, error)
 		settings.SquelchThresholdDBFS,
 		settings.SquelchSNRThreshold,
 		settings.CTCSSHz,
+		settings.CTCSSDebounceMS,
 	)
 	if err != nil {
 		return nil, err
@@ -581,11 +589,14 @@ type narrowFMSquelch struct {
 	buffer               []float64
 	bufferHead           int
 	bufferTail           int
+	ctcssDebounceSamples int
+	ctcssDetectedSamples int
+	ctcssDebouncedOpen   bool
 	ctcssFast            *ctcssDetector
 	ctcssSlow            *ctcssDetector
 }
 
-func newNarrowFMSquelch(sampleRate, manualThresholdDBFS, snrThresholdDB, ctcssHz float64) (*narrowFMSquelch, error) {
+func newNarrowFMSquelch(sampleRate, manualThresholdDBFS, snrThresholdDB, ctcssHz float64, ctcssDebounceMS int) (*narrowFMSquelch, error) {
 	if sampleRate <= 0 {
 		return nil, fmt.Errorf("squelch sample rate must be positive")
 	}
@@ -594,6 +605,18 @@ func newNarrowFMSquelch(sampleRate, manualThresholdDBFS, snrThresholdDB, ctcssHz
 	}
 	if snrThresholdDB < 0 {
 		return nil, fmt.Errorf("squelch SNR threshold must be non-negative")
+	}
+	if ctcssDebounceMS < 0 {
+		return nil, fmt.Errorf("CTCSS debounce must be non-negative")
+	}
+
+	ctcssDebounceSamples := 0
+	if ctcssDebounceMS > 0 {
+		debounceSamples := math.Ceil(float64(ctcssDebounceMS) * sampleRate / 1000)
+		if debounceSamples >= float64(^uint(0)>>1) {
+			return nil, fmt.Errorf("CTCSS debounce is too large")
+		}
+		ctcssDebounceSamples = int(debounceSamples)
 	}
 
 	bufferSize := scaledSquelchSamples(102, sampleRate)
@@ -615,6 +638,7 @@ func newNarrowFMSquelch(sampleRate, manualThresholdDBFS, snrThresholdDB, ctcssHz
 		flapOpensThreshold:   3,
 		buffer:               make([]float64, bufferSize),
 		bufferTail:           1 % bufferSize,
+		ctcssDebounceSamples: ctcssDebounceSamples,
 	}
 	squelch.flappySignalRatio = squelch.normalSignalRatio * 0.9
 	squelch.recalculateMovingAverageCap()
@@ -708,8 +732,27 @@ func (squelch *narrowFMSquelch) processAudioSample(sample float64) {
 		return
 	}
 	squelch.ctcssSlow.process(sample)
-	if !squelch.ctcssSlow.enoughSamples {
-		squelch.ctcssFast.process(sample)
+	if squelch.ctcssSlow.enoughSamples {
+		squelch.updateCTCSSDebounce(squelch.ctcssSlow.hasTone)
+		return
+	}
+	squelch.ctcssFast.process(sample)
+	squelch.updateCTCSSDebounce(squelch.ctcssFast.hasTone)
+}
+
+func (squelch *narrowFMSquelch) updateCTCSSDebounce(toneDetected bool) {
+	if !toneDetected {
+		squelch.ctcssDetectedSamples = 0
+		squelch.ctcssDebouncedOpen = false
+		return
+	}
+	if squelch.ctcssDebouncedOpen {
+		return
+	}
+
+	squelch.ctcssDetectedSamples++
+	if squelch.ctcssDetectedSamples >= squelch.ctcssDebounceSamples {
+		squelch.ctcssDebouncedOpen = true
 	}
 }
 
@@ -720,10 +763,7 @@ func (squelch *narrowFMSquelch) isOpen() bool {
 	if squelch.ctcssSlow == nil {
 		return true
 	}
-	if squelch.ctcssSlow.enoughSamples {
-		return squelch.ctcssSlow.hasTone
-	}
-	return squelch.ctcssFast.hasTone
+	return squelch.ctcssDebouncedOpen
 }
 
 func (squelch *narrowFMSquelch) shouldFilterSample() bool {
@@ -798,6 +838,8 @@ func (squelch *narrowFMSquelch) advanceState() {
 			if squelch.ctcssFast != nil {
 				squelch.ctcssFast.reset()
 				squelch.ctcssSlow.reset()
+				squelch.ctcssDetectedSamples = 0
+				squelch.ctcssDebouncedOpen = false
 			}
 		} else if squelch.closedSampleCount < squelch.recentSampleSize {
 			squelch.closedSampleCount++

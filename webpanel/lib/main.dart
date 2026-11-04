@@ -463,7 +463,7 @@ class TopologyDiagram extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         const boxWidth = 170.0;
-        const boxHeight = 84.0;
+        const boxHeight = 108.0;
         const rowGap = 18.0;
         const serverWidth = 210.0;
         const serverHeight = 96.0;
@@ -542,6 +542,7 @@ class TopologyDiagram extends StatelessWidget {
                                 node: node,
                                 width: boxWidth,
                                 height: boxHeight,
+                                showLastKeyUp: true,
                               ),
                             )
                             .toList(),
@@ -749,6 +750,7 @@ class _NodeCard extends StatelessWidget {
   final double height;
   final bool isServer;
   final bool compact;
+  final bool showLastKeyUp;
 
   const _NodeCard({
     required this.node,
@@ -756,6 +758,7 @@ class _NodeCard extends StatelessWidget {
     this.height = 84,
     this.isServer = false,
     this.compact = false,
+    this.showLastKeyUp = false,
   });
 
   @override
@@ -838,6 +841,19 @@ class _NodeCard extends StatelessWidget {
               ),
             ),
           ],
+          if (showLastKeyUp) ...[
+            const SizedBox(height: 4),
+            Text(
+              node.lastKeyUpAgo.isEmpty
+                  ? 'Last keyup: never'
+                  : 'Last keyup: ${node.lastKeyUpAgo} ago',
+              style: const TextStyle(
+                color: Color(0xFF9DB6C7),
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -899,6 +915,7 @@ class PublicNode {
   final bool active;
   final double? rssi;
   final double? snr;
+  final String lastKeyUpAgo;
 
   const PublicNode({
     required this.peerId,
@@ -906,6 +923,7 @@ class PublicNode {
     required this.active,
     required this.rssi,
     required this.snr,
+    this.lastKeyUpAgo = '',
   });
 
   factory PublicNode.fromJson(Map<String, dynamic> json) {
@@ -930,6 +948,7 @@ class PublicNode {
       active: json['active'] as bool? ?? false,
       rssi: parsedRssi,
       snr: parsedSnr,
+      lastKeyUpAgo: json['lastKeyUpAgo'] as String? ?? '',
     );
   }
 }

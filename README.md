@@ -40,7 +40,7 @@ The listen client demodulates narrow FM locally and sends gated mono PCM to the 
 | `FMDeviation`, `Tau` | FM deviation in Hz and de-emphasis time constant in microseconds. |
 | `SquelchThreshold` | Manual dBFS threshold. A negative value enables manual squelch; `0` selects SNR-based squelch. |
 | `SquelchSNRThreshold` | Automatic squelch threshold above the tracked noise floor in dB. `0` leaves carrier squelch open. |
-| `CTCSS` | Required CTCSS tone in Hz. `0` disables tone gating. |
+| `CTCSS`, `CTCSSDebounceMS` | Required CTCSS tone in Hz and its opening debounce in milliseconds. `0` disables tone gating; the debounce defaults to `50` ms and `0` opens immediately after tone detection. |
 | `Notch`, `NotchQ` | Optional output notch frequency and Q. Use the configured CTCSS tone as `Notch` to remove it from transmitted audio. |
 | `AmpFactor`, `AudioGain` | Floating-point DSP gain and final PCM gain. |
 | `Highpass`, `Lowpass` | Output-audio filter cutoffs in Hz. Set either to `0` to disable that filter. |
@@ -55,6 +55,10 @@ An Interface node runs on a Raspberry Pi with an ALSA soundcard and two GPIO lin
 `arecord` and `aplay` from the `alsa-utils` package must be installed. `AudioRate` defaults to 48000 Hz and `AudioChunkMs` defaults to 20 ms; their product must produce an integral PCM frame.
 
 On hosts that are not Raspberry Pi devices, Broadcast and Interface nodes skip GPIO access. Broadcast radio playback runs without PTT control; Interface input is treated as squelch-open and its PTT output is disabled.
+
+## Broadcast Node Configuration
+
+`AudioOutputGain` is a non-negative multiplier applied to audio sent from a Broadcast node to Radio or Discord. It defaults to `1.0`; values above `1.0` increase the level, and the PCM output is clipped safely at the 16-bit range. For Radio nodes, `HangTimeMS` keeps the GPIO PTT asserted after audio ends; it defaults to `50` ms and `0` releases PTT immediately.
 
 All audio sources expose `RouteToBroadcast`; Listen nodes additionally expose `RouteToInterface`. These source flags decide which node classes receive their audio. By default, Listen routes to both classes and Interface routes to Broadcast. The server mixes every live Interface source with the selected RF Listen source for each eligible destination. Interface-origin audio is never routed into Interface playback, preventing soundcard feedback.
 
