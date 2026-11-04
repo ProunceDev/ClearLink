@@ -40,7 +40,7 @@ The listen client demodulates narrow FM locally and sends gated mono PCM to the 
 | `FMDeviation`, `Tau` | FM deviation in Hz and de-emphasis time constant in microseconds. |
 | `SquelchThreshold` | Manual dBFS threshold. A negative value enables manual squelch; `0` selects SNR-based squelch. |
 | `SquelchSNRThreshold` | Automatic squelch threshold above the tracked noise floor in dB. `0` leaves carrier squelch open. |
-| `CTCSS`, `CTCSSDebounceMS` | Required CTCSS tone in Hz and its opening debounce in milliseconds. `0` disables tone gating; the debounce defaults to `50` ms and `0` opens immediately after tone detection. |
+| `CTCSS`, `CTCSSDebounceMS` | Required CTCSS tone in Hz and its opening debounce in milliseconds. `0` disables tone gating. The decoder evaluates 50 ms windows, and each qualifying window counts toward the configured debounce; the debounce defaults to `50` ms and does not add a separate confirmation delay. |
 | `Notch`, `NotchQ` | Optional output notch frequency and Q. Use the configured CTCSS tone as `Notch` to remove it from transmitted audio. |
 | `AmpFactor`, `AudioGain` | Floating-point DSP gain and final PCM gain. |
 | `Highpass`, `Lowpass` | Output-audio filter cutoffs in Hz. Set either to `0` to disable that filter. |

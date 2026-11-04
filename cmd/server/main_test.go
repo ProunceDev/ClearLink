@@ -2,6 +2,7 @@ package main
 
 import (
 	"clearlink/internal/models"
+	"net"
 	"testing"
 	"time"
 )
@@ -72,4 +73,69 @@ func TestMarkAudioSourceActivityRecordsListenKeyUp(t *testing.T) {
 	if lastKeyUp.IsZero() || lastKeyUp.Before(before) {
 		t.Fatalf("LastKeyUp = %v, want a time at or after %v", lastKeyUp, before)
 	}
+}
+
+func TestEnsureNodeConfigDefaultsAddsMissingBroadcastHangTime(t *testing.T) {
+	received := models.Config{Entries: []models.ConfigEntry{
+		{
+			Key:     "NodeName",
+			Type:    models.ApplicationTypeBroadcast,
+			Var:     models.EntryVar{Type: models.EntryTypeString, Data: "Radio"},
+			Default: models.EntryVar{Type: models.EntryTypeString, Data: "DefaultBroadcastNodeName"},
+		},
+	}}
+
+	normalized := ensureNodeConfigDefaults(models.ApplicationTypeBroadcast, received)
+	for _, entry := range normalized.Entries {
+		if entry.Key != "HangTimeMS" || entry.Type != models.ApplicationTypeBroadcast {
+			continue
+		}
+		if got, want := entry.Var.Data, 50; got != want {
+			t.Fatalf("HangTimeMS = %v, want %v", got, want)
+		}
+		return
+	}
+	t.Fatal("normalized broadcast config is missing HangTimeMS")
+}
+
+func TestGetNodeStatusesIncludesDefaultBroadcastHangTime(t *testing.T) {
+	peersMu.Lock()
+	originalPeers := peers
+	peers = map[uint16]*models.NetworkPeer{
+		7: {
+			PeerID:     7,
+			Name:       "Radio",
+			NodeType:   models.ApplicationTypeBroadcast,
+			RemoteAddr: &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4125},
+			Config: models.Config{Entries: []models.ConfigEntry{
+				{
+					Key:     "NodeName",
+					Type:    models.ApplicationTypeBroadcast,
+					Var:     models.EntryVar{Type: models.EntryTypeString, Data: "Radio"},
+					Default: models.EntryVar{Type: models.EntryTypeString, Data: "DefaultBroadcastNodeName"},
+				},
+			}},
+		},
+	}
+	peersMu.Unlock()
+	t.Cleanup(func() {
+		peersMu.Lock()
+		peers = originalPeers
+		peersMu.Unlock()
+	})
+
+	nodes := getNodeStatuses()
+	if len(nodes) != 1 {
+		t.Fatalf("node count = %d, want 1", len(nodes))
+	}
+	for _, entry := range nodes[0].Config {
+		if entry.Key != "HangTimeMS" || entry.Type != string(models.ApplicationTypeBroadcast) {
+			continue
+		}
+		if got, want := entry.Value, "50"; got != want {
+			t.Fatalf("HangTimeMS value = %q, want %q", got, want)
+		}
+		return
+	}
+	t.Fatal("node status is missing HangTimeMS")
 }

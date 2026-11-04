@@ -592,8 +592,7 @@ type narrowFMSquelch struct {
 	ctcssDebounceSamples int
 	ctcssDetectedSamples int
 	ctcssDebouncedOpen   bool
-	ctcssFast            *ctcssDetector
-	ctcssSlow            *ctcssDetector
+	ctcss                *ctcssDetector
 }
 
 func newNarrowFMSquelch(sampleRate, manualThresholdDBFS, snrThresholdDB, ctcssHz float64, ctcssDebounceMS int) (*narrowFMSquelch, error) {
@@ -648,16 +647,11 @@ func newNarrowFMSquelch(sampleRate, manualThresholdDBFS, snrThresholdDB, ctcssHz
 	}
 
 	if ctcssHz > 0 {
-		fast, err := newCTCSSDetector(ctcssHz, sampleRate, sampleRate*0.05)
+		ctcss, err := newCTCSSDetector(ctcssHz, sampleRate, sampleRate*0.05)
 		if err != nil {
 			return nil, err
 		}
-		slow, err := newCTCSSDetector(ctcssHz, sampleRate, sampleRate*0.4)
-		if err != nil {
-			return nil, err
-		}
-		squelch.ctcssFast = fast
-		squelch.ctcssSlow = slow
+		squelch.ctcss = ctcss
 	}
 
 	return squelch, nil
@@ -728,29 +722,28 @@ func (squelch *narrowFMSquelch) processFilteredSample(sample float64) {
 }
 
 func (squelch *narrowFMSquelch) processAudioSample(sample float64) {
-	if squelch.ctcssSlow == nil || squelch.currentPhase == squelchClosed {
+	if squelch.ctcss == nil || squelch.currentPhase == squelchClosed {
 		return
 	}
-	squelch.ctcssSlow.process(sample)
-	if squelch.ctcssSlow.enoughSamples {
-		squelch.updateCTCSSDebounce(squelch.ctcssSlow.hasTone)
-		return
+	windowComplete, toneDetected := squelch.ctcss.process(sample)
+	if windowComplete {
+		squelch.updateCTCSSDebounce(toneDetected, squelch.ctcss.windowSize)
 	}
-	squelch.ctcssFast.process(sample)
-	squelch.updateCTCSSDebounce(squelch.ctcssFast.hasTone)
 }
 
-func (squelch *narrowFMSquelch) updateCTCSSDebounce(toneDetected bool) {
+func (squelch *narrowFMSquelch) updateCTCSSDebounce(toneDetected bool, detectedSamples int) {
 	if !toneDetected {
-		squelch.ctcssDetectedSamples = 0
-		squelch.ctcssDebouncedOpen = false
+		if !squelch.ctcssDebouncedOpen || squelch.ctcss == nil || !squelch.ctcss.hasTone {
+			squelch.ctcssDetectedSamples = 0
+			squelch.ctcssDebouncedOpen = false
+		}
 		return
 	}
 	if squelch.ctcssDebouncedOpen {
 		return
 	}
 
-	squelch.ctcssDetectedSamples++
+	squelch.ctcssDetectedSamples += detectedSamples
 	if squelch.ctcssDetectedSamples >= squelch.ctcssDebounceSamples {
 		squelch.ctcssDebouncedOpen = true
 	}
@@ -760,7 +753,7 @@ func (squelch *narrowFMSquelch) isOpen() bool {
 	if squelch.currentPhase != squelchOpen && squelch.currentPhase != squelchClosing {
 		return false
 	}
-	if squelch.ctcssSlow == nil {
+	if squelch.ctcss == nil {
 		return true
 	}
 	return squelch.ctcssDebouncedOpen
@@ -835,9 +828,8 @@ func (squelch *narrowFMSquelch) advanceState() {
 			squelch.usingPostFilter = false
 			squelch.closedSampleCount = 0
 			squelch.currentPhase = squelchClosed
-			if squelch.ctcssFast != nil {
-				squelch.ctcssFast.reset()
-				squelch.ctcssSlow.reset()
+			if squelch.ctcss != nil {
+				squelch.ctcss.reset()
 				squelch.ctcssDetectedSamples = 0
 				squelch.ctcssDebouncedOpen = false
 			}
@@ -961,6 +953,17 @@ func (squelch *narrowFMSquelch) isFlapping() bool {
 	return squelch.recentOpenCount >= squelch.flapOpensThreshold
 }
 
+const (
+	ctcssGuardOffsetHz            = 2.5
+	ctcssComparisonExclusionHz    = 5.0
+	ctcssMinimumTargetRatio       = 0.05
+	ctcssMinimumTargetEnergyRatio = 0.01
+	ctcssMinimumTargetToAverage   = 3.0
+	ctcssConfirmationWindowCount  = 1
+	ctcssReleaseWindowCount       = 2
+	ctcssDetectionEnergyEpsilon   = 1e-12
+)
+
 type toneDetector struct {
 	frequency   float64
 	coefficient float64
@@ -972,8 +975,7 @@ type toneDetector struct {
 }
 
 func newToneDetector(frequency, sampleRate float64, windowSize int) toneDetector {
-	bin := int(0.5 + float64(windowSize)*frequency/sampleRate)
-	omega := 2 * math.Pi * float64(bin) / float64(windowSize)
+	omega := 2 * math.Pi * frequency / sampleRate
 	return toneDetector{
 		frequency:   frequency,
 		coefficient: 2 * math.Cos(omega),
@@ -982,7 +984,11 @@ func newToneDetector(frequency, sampleRate float64, windowSize int) toneDetector
 }
 
 func (detector *toneDetector) process(sample float64) {
-	q0 := detector.coefficient*detector.q1 - detector.q2 + sample
+	windowedSample := sample
+	if detector.windowSize > 1 {
+		windowedSample *= 0.5 - 0.5*math.Cos(2*math.Pi*float64(detector.count)/float64(detector.windowSize-1))
+	}
+	q0 := detector.coefficient*detector.q1 - detector.q2 + windowedSample
 	detector.q2 = detector.q1
 	detector.q1 = q0
 	detector.count++
@@ -996,16 +1002,18 @@ func (detector *toneDetector) reset() {
 	detector.count = 0
 	detector.q1 = 0
 	detector.q2 = 0
+	detector.power = 0
 }
 
 type ctcssDetector struct {
 	detectors     []toneDetector
 	windowSize    int
 	sampleCount   int
+	windowEnergy  float64
 	enoughSamples bool
 	hasTone       bool
-	foundCount    int
-	notFoundCount int
+	confirmed     int
+	missed        int
 }
 
 func newCTCSSDetector(targetHz, sampleRate, windowSamples float64) (*ctcssDetector, error) {
@@ -1019,8 +1027,13 @@ func newCTCSSDetector(targetHz, sampleRate, windowSamples float64) (*ctcssDetect
 
 	detector := &ctcssDetector{windowSize: windowSize}
 	detector.addTone(targetHz, sampleRate)
+	for _, guardFrequency := range []float64{targetHz - ctcssGuardOffsetHz, targetHz + ctcssGuardOffsetHz} {
+		if guardFrequency > 0 && guardFrequency < sampleRate/2 {
+			detector.addTone(guardFrequency, sampleRate)
+		}
+	}
 	for _, tone := range standardCTCSSTones {
-		if math.Abs(targetHz-tone) >= 5 {
+		if math.Abs(targetHz-tone) >= ctcssComparisonExclusionHz {
 			detector.addTone(tone, sampleRate)
 		}
 	}
@@ -1037,16 +1050,27 @@ func (detector *ctcssDetector) addTone(frequency, sampleRate float64) {
 	detector.detectors = append(detector.detectors, candidate)
 }
 
-func (detector *ctcssDetector) process(sample float64) {
+func (detector *ctcssDetector) process(sample float64) (bool, bool) {
+	detector.windowEnergy += sample * sample
 	for index := range detector.detectors {
 		detector.detectors[index].process(sample)
 	}
 	detector.sampleCount++
 	if detector.sampleCount < detector.windowSize {
-		return
+		return false, false
 	}
 
 	detector.enoughSamples = true
+	toneDetected := detector.updateToneState()
+	for index := range detector.detectors {
+		detector.detectors[index].reset()
+	}
+	detector.sampleCount = 0
+	detector.windowEnergy = 0
+	return true, toneDetected
+}
+
+func (detector *ctcssDetector) updateToneState() bool {
 	targetPower := detector.detectors[0].power
 	maximumPower := targetPower
 	totalPower := 0.0
@@ -1057,22 +1081,37 @@ func (detector *ctcssDetector) process(sample float64) {
 		}
 	}
 	averagePower := totalPower / float64(len(detector.detectors))
-	detector.hasTone = targetPower >= maximumPower && targetPower > averagePower
-	if detector.hasTone {
-		detector.foundCount++
-	} else {
-		detector.notFoundCount++
+	targetRatio := targetPower / (totalPower + ctcssDetectionEnergyEpsilon)
+	targetEnergyRatio := targetPower / (detector.windowEnergy*float64(detector.windowSize) + ctcssDetectionEnergyEpsilon)
+	toneDetected := targetPower >= maximumPower &&
+		targetPower > averagePower*ctcssMinimumTargetToAverage &&
+		targetRatio > ctcssMinimumTargetRatio &&
+		targetEnergyRatio > ctcssMinimumTargetEnergyRatio
+
+	if toneDetected {
+		detector.confirmed++
+		detector.missed = 0
+		if detector.confirmed >= ctcssConfirmationWindowCount {
+			detector.hasTone = true
+		}
+		return true
 	}
-	for index := range detector.detectors {
-		detector.detectors[index].reset()
+
+	detector.confirmed = 0
+	detector.missed++
+	if detector.missed >= ctcssReleaseWindowCount {
+		detector.hasTone = false
 	}
-	detector.sampleCount = 0
+	return false
 }
 
 func (detector *ctcssDetector) reset() {
 	detector.sampleCount = 0
+	detector.windowEnergy = 0
 	detector.enoughSamples = false
 	detector.hasTone = false
+	detector.confirmed = 0
+	detector.missed = 0
 	for index := range detector.detectors {
 		detector.detectors[index].reset()
 	}

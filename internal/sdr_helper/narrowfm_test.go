@@ -85,7 +85,7 @@ func TestNarrowFMSquelchRequiresConfiguredCTCSS(t *testing.T) {
 	for sample := 0; sample < 1000; sample++ {
 		squelch.processRawSample(0.01)
 	}
-	for sample := 0; sample < 2000 && !squelch.isOpen(); sample++ {
+	for sample := 0; sample < 20000 && !squelch.isOpen(); sample++ {
 		squelch.processRawSample(0.5)
 		if squelch.shouldProcessAudio() {
 			audio := math.Sin(2 * math.Pi * targetTone * float64(sample) / sampleRate)
@@ -109,20 +109,20 @@ func TestNarrowFMSquelchDebouncesConfiguredCTCSS(t *testing.T) {
 	}
 
 	for sample := 0; sample < squelch.ctcssDebounceSamples-1; sample++ {
-		squelch.updateCTCSSDebounce(true)
+		squelch.updateCTCSSDebounce(true, 1)
 	}
 	if squelch.isOpen() {
 		t.Fatal("CTCSS squelch opened before the debounce interval elapsed")
 	}
 
-	squelch.updateCTCSSDebounce(true)
+	squelch.updateCTCSSDebounce(true, 1)
 	if !squelch.isOpen() {
 		t.Fatal("CTCSS squelch did not open after the debounce interval elapsed")
 	}
 
-	squelch.updateCTCSSDebounce(false)
+	squelch.updateCTCSSDebounce(false, 0)
 	for sample := 0; sample < squelch.ctcssDebounceSamples-1; sample++ {
-		squelch.updateCTCSSDebounce(true)
+		squelch.updateCTCSSDebounce(true, 1)
 	}
 	if squelch.isOpen() {
 		t.Fatal("CTCSS debounce did not reset after the tone was lost")
@@ -137,7 +137,7 @@ func TestCTCSSDetectorAcceptsTargetAndRejectsOtherTone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newCTCSSDetector() error = %v", err)
 	}
-	for sample := 0; sample < target.windowSize; sample++ {
+	for sample := 0; sample < target.windowSize*ctcssConfirmationWindowCount; sample++ {
 		value := math.Sin(2 * math.Pi * targetTone * float64(sample) / sampleRate)
 		target.process(value)
 	}
@@ -149,12 +149,110 @@ func TestCTCSSDetectorAcceptsTargetAndRejectsOtherTone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newCTCSSDetector() error = %v", err)
 	}
-	for sample := 0; sample < wrong.windowSize; sample++ {
+	for sample := 0; sample < wrong.windowSize*ctcssConfirmationWindowCount; sample++ {
 		value := math.Sin(2 * math.Pi * 67.0 * float64(sample) / sampleRate)
 		wrong.process(value)
 	}
 	if wrong.hasTone {
 		t.Fatal("CTCSS detector accepted a different standard tone")
+	}
+}
+
+func TestCTCSSDetectorOpensWithinSingleWindow(t *testing.T) {
+	const (
+		sampleRate = 8000.0
+		targetTone = 100.0
+	)
+
+	detector, err := newCTCSSDetector(targetTone, sampleRate, 0.05*sampleRate)
+	if err != nil {
+		t.Fatalf("newCTCSSDetector() error = %v", err)
+	}
+	for sample := 0; sample < detector.windowSize; sample++ {
+		detector.process(math.Sin(2 * math.Pi * targetTone * float64(sample) / sampleRate))
+	}
+	if !detector.hasTone {
+		t.Fatal("CTCSS detector did not accept the target tone within one window")
+	}
+
+	for sample := 0; sample < detector.windowSize; sample++ {
+		detector.process(math.Sin(2 * math.Pi * 67 * float64(sample) / sampleRate))
+	}
+	if !detector.hasTone {
+		t.Fatal("CTCSS detector cleared after one missed window")
+	}
+	for sample := 0; sample < detector.windowSize; sample++ {
+		detector.process(math.Sin(2 * math.Pi * 67 * float64(sample) / sampleRate))
+	}
+	if detector.hasTone {
+		t.Fatal("CTCSS detector did not clear after repeated missed windows")
+	}
+}
+
+func TestCTCSSDetectorRejectsNearbyTone(t *testing.T) {
+	const (
+		sampleRate = 8000.0
+		targetTone = 100.0
+		nearbyTone = 103.5
+	)
+
+	detector, err := newCTCSSDetector(targetTone, sampleRate, 0.05*sampleRate)
+	if err != nil {
+		t.Fatalf("newCTCSSDetector() error = %v", err)
+	}
+	for sample := 0; sample < detector.windowSize; sample++ {
+		detector.process(math.Sin(2 * math.Pi * nearbyTone * float64(sample) / sampleRate))
+	}
+	if detector.hasTone {
+		t.Fatalf("CTCSS detector accepted nearby tone %.1f Hz for %.1f Hz target", nearbyTone, targetTone)
+	}
+}
+
+func TestCTCSSDetectorRejectsBroadbandNoise(t *testing.T) {
+	const (
+		sampleRate = 8000.0
+		targetTone = 100.0
+	)
+
+	detector, err := newCTCSSDetector(targetTone, sampleRate, 0.05*sampleRate)
+	if err != nil {
+		t.Fatalf("newCTCSSDetector() error = %v", err)
+	}
+
+	seed := uint32(1)
+	for sample := 0; sample < detector.windowSize; sample++ {
+		seed = seed*1664525 + 1013904223
+		noise := (float64(seed>>16)/65535.0 - 0.5) * 2
+		detector.process(noise)
+	}
+	if detector.hasTone {
+		t.Fatal("CTCSS detector accepted broadband noise")
+	}
+}
+
+func TestNarrowFMSquelchCountsCTCSSWindowTowardDebounce(t *testing.T) {
+	const (
+		sampleRate = 8000.0
+		targetTone = 100.0
+	)
+
+	squelch, err := newNarrowFMSquelch(sampleRate, 0, 0, targetTone, 50)
+	if err != nil {
+		t.Fatalf("newNarrowFMSquelch() error = %v", err)
+	}
+	for sample := 0; sample < squelch.ctcss.windowSize; sample++ {
+		squelch.processAudioSample(math.Sin(2 * math.Pi * targetTone * float64(sample) / sampleRate))
+	}
+	if !squelch.isOpen() {
+		t.Fatal("CTCSS squelch did not open within its configured debounce interval")
+	}
+}
+
+func TestToneDetectorUsesExactFrequency(t *testing.T) {
+	detector := newToneDetector(100, 8000, 400)
+	want := 2 * math.Cos(2*math.Pi*100/8000)
+	if math.Abs(detector.coefficient-want) > 1e-12 {
+		t.Fatalf("Goertzel coefficient = %.16f, want %.16f", detector.coefficient, want)
 	}
 }
 

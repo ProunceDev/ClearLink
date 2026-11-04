@@ -112,6 +112,7 @@ func getNodeStatuses() []web.NodeStatus {
 	nodes := make([]web.NodeStatus, 0, len(peers))
 	for _, peer := range peers {
 		active := peerIsAudioActiveLocked(peer, now, activeListenPeerID)
+		peerConfig := ensureNodeConfigDefaults(peer.NodeType, peer.Config)
 
 		node := web.NodeStatus{
 			PeerID:           peer.PeerID,
@@ -121,9 +122,9 @@ func getNodeStatuses() []web.NodeStatus {
 			LastHeartbeat:    peer.LastHeartbeat.Format(time.RFC3339),
 			LastHeartbeatAgo: time.Since(peer.LastHeartbeat).Round(time.Second).String(),
 			Active:           active,
-			Config:           make([]web.NodeConfig, 0, len(peer.Config.Entries)),
+			Config:           make([]web.NodeConfig, 0, len(peerConfig.Entries)),
 		}
-		for _, entry := range peer.Config.Entries {
+		for _, entry := range peerConfig.Entries {
 			if peer.NodeType != models.ApplicationTypeUnknown && entry.Type != peer.NodeType {
 				continue
 			}
@@ -155,6 +156,33 @@ func getNodeStatuses() []web.NodeStatus {
 	return nodes
 }
 
+func ensureNodeConfigDefaults(nodeType models.ApplicationType, received models.Config) models.Config {
+	entries := append([]models.ConfigEntry(nil), received.Entries...)
+	present := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if entry.Type == nodeType {
+			present[entry.Key] = struct{}{}
+		}
+	}
+
+	for _, entry := range config.ConfigEntries {
+		if entry.Type != nodeType {
+			continue
+		}
+		if _, exists := present[entry.Key]; exists {
+			continue
+		}
+		entries = append(entries, models.ConfigEntry{
+			Key:     entry.Key,
+			Type:    entry.Type,
+			Var:     entry.Default,
+			Default: entry.Default,
+		})
+	}
+
+	return models.Config{Entries: entries}
+}
+
 func applyNodeConfigUpdate(peerID uint16, key, applicationType, value string) error {
 	fmt.Printf("Applying config update to peer %d: %s:%s = %s\n", peerID, applicationType, key, value)
 	peersMu.RLock()
@@ -168,9 +196,10 @@ func applyNodeConfigUpdate(peerID uint16, key, applicationType, value string) er
 		peersMu.RUnlock()
 		return errors.New("config type does not match node type")
 	}
+	peerConfig := ensureNodeConfigDefaults(peer.NodeType, peer.Config)
 	var targetEntry *models.ConfigEntry
-	for i := range peer.Config.Entries {
-		entry := &peer.Config.Entries[i]
+	for i := range peerConfig.Entries {
+		entry := &peerConfig.Entries[i]
 		if peer.NodeType != models.ApplicationTypeUnknown && entry.Type != peer.NodeType {
 			continue
 		}
@@ -211,8 +240,7 @@ func applyNodeConfigUpdate(peerID uint16, key, applicationType, value string) er
 		return errors.New("unsupported config entry type")
 	}
 
-	candidateConfig := models.Config{Entries: make([]models.ConfigEntry, len(peer.Config.Entries))}
-	copy(candidateConfig.Entries, peer.Config.Entries)
+	candidateConfig := models.Config{Entries: append([]models.ConfigEntry(nil), peerConfig.Entries...)}
 	for index := range candidateConfig.Entries {
 		entry := &candidateConfig.Entries[index]
 		if entry.Key == targetEntry.Key && entry.Type == targetEntry.Type {
@@ -237,6 +265,7 @@ func applyNodeConfigUpdate(peerID uint16, key, applicationType, value string) er
 
 	peersMu.Lock()
 	if currentPeer, ok := peers[peerID]; ok {
+		currentPeer.Config = ensureNodeConfigDefaults(currentPeer.NodeType, currentPeer.Config)
 		for i := range currentPeer.Config.Entries {
 			entry := &currentPeer.Config.Entries[i]
 			if entry.Key == targetEntry.Key && entry.Type == targetEntry.Type {
@@ -438,7 +467,7 @@ func networkLoop() {
 				}
 				peersMu.Lock()
 				if peer, ok := peers[hdr.PeerID]; ok {
-					peer.Config = packet.Config
+					peer.Config = ensureNodeConfigDefaults(peer.NodeType, packet.Config)
 					peer.HasSentConf = true
 				}
 				peersMu.Unlock()
