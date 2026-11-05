@@ -129,6 +129,50 @@ void main() {
     expect(find.text('1 pending'), findsOneWidget);
     expect(find.text('Save changes'), findsOneWidget);
   });
+
+  testWidgets('audio event editor selects multiple MP3 files', (tester) async {
+    const firstAsset = MediaAsset(
+      id: '0123456789abcdef0123456789abcdef',
+      name: 'station-id.mp3',
+      sizeBytes: 1200,
+      uploadedAt: '',
+      streamUrl: '',
+    );
+    const secondAsset = MediaAsset(
+      id: 'abcdef0123456789abcdef0123456789',
+      name: 'alternate-id.mp3',
+      sizeBytes: 2400,
+      uploadedAt: '',
+      streamUrl: '',
+    );
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: AudioEventEditorDialog(
+            api: AdminApi(baseUrl: 'http://localhost:8080'),
+            nodes: [],
+            media: [firstAsset, secondAsset],
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Create audio event'), findsOneWidget);
+    expect(find.text('Idle interval (minutes)'), findsOneWidget);
+    await tester.ensureVisible(find.text('Select files'));
+    await tester.tap(find.text('Select files'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Select MP3 files'), findsOneWidget);
+    await tester.tap(find.byType(Checkbox).at(0));
+    await tester.tap(find.byType(Checkbox).at(1));
+    await tester.tap(find.text('Use selected'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('station-id.mp3'), findsWidgets);
+    expect(find.text('alternate-id.mp3'), findsWidgets);
+  });
 }
 
 Future<void> _noOpRefresh() async {}

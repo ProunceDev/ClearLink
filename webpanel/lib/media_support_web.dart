@@ -11,23 +11,87 @@ class SelectedMediaFile {
   const SelectedMediaFile({required this.name, required this.bytes});
 }
 
+class MediaUploadResponse {
+  final int statusCode;
+  final String body;
+
+  const MediaUploadResponse({required this.statusCode, required this.body});
+}
+
 Future<SelectedMediaFile?> chooseMp3File() async {
-  final input = html.FileUploadInputElement()..accept = '.mp3,audio/mpeg';
-  input.click();
-  await input.onChange.first;
+  final input = html.FileUploadInputElement()
+    ..accept = '.mp3,audio/mpeg'
+    ..style.display = 'none';
+  html.document.body?.append(input);
 
-  final file = input.files?.isEmpty ?? true ? null : input.files!.first;
-  if (file == null) {
-    return null;
-  }
+  try {
+    input.click();
+    await input.onChange.first;
 
-  final reader = html.FileReader()..readAsArrayBuffer(file);
-  await reader.onLoad.first;
-  final result = reader.result;
-  if (result is! ByteBuffer) {
-    return null;
+    final file = input.files?.isEmpty ?? true ? null : input.files!.first;
+    if (file == null) {
+      return null;
+    }
+
+    final reader = html.FileReader()..readAsArrayBuffer(file);
+    await reader.onLoad.first;
+    final result = reader.result;
+    if (result is! ByteBuffer) {
+      return null;
+    }
+    return SelectedMediaFile(name: file.name, bytes: result.asUint8List());
+  } finally {
+    input.remove();
   }
-  return SelectedMediaFile(name: file.name, bytes: result.asUint8List());
+}
+
+Future<MediaUploadResponse> uploadMp3File(
+  Uri url,
+  SelectedMediaFile file, {
+  void Function(int sentBytes, int totalBytes)? onProgress,
+}) {
+  final request = html.HttpRequest();
+  final response = Completer<MediaUploadResponse>();
+  final formData = html.FormData();
+  formData.appendBlob('file', html.Blob([file.bytes], 'audio/mpeg'), file.name);
+
+  request
+    ..open('POST', url.toString())
+    ..withCredentials = true;
+  request.upload.onProgress.listen((event) {
+    final loaded = event.loaded;
+    final total = event.total;
+    if (event.lengthComputable &&
+        loaded != null &&
+        total != null &&
+        total > 0) {
+      onProgress?.call(loaded, total);
+    }
+  });
+  request.onLoad.listen((_) {
+    if (!response.isCompleted) {
+      response.complete(
+        MediaUploadResponse(
+          statusCode: request.status ?? 0,
+          body: request.responseText ?? '',
+        ),
+      );
+    }
+  });
+  request.onError.listen((_) {
+    if (!response.isCompleted) {
+      response.completeError(
+        StateError('The upload connection was interrupted'),
+      );
+    }
+  });
+  request.onAbort.listen((_) {
+    if (!response.isCompleted) {
+      response.completeError(StateError('The upload was cancelled'));
+    }
+  });
+  request.send(formData);
+  return response.future;
 }
 
 abstract class MediaPlayer {

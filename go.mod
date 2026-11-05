@@ -13,6 +13,7 @@ require (
 require (
 	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
+	github.com/hajimehoshi/go-mp3 v0.3.4 // indirect
 	golang.org/x/crypto v0.50.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 )

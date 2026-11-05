@@ -121,6 +121,32 @@ func TestMixedAudioRouterResamplesToOutputFrame(t *testing.T) {
 	}
 }
 
+func TestMixedAudioRouterHoldsBroadcastWithSilenceUntilInjectedFrame(t *testing.T) {
+	router := newMixedAudioRouter()
+	router.beginInjectedAudio()
+
+	frame, active := router.takeInjectedFrame()
+	if !active || len(frame) != audioMixFrameSamples {
+		t.Fatalf("injected frame = %v, active = %t; want active silence frame", len(frame), active)
+	}
+	for _, sample := range frame {
+		if sample != 0 {
+			t.Fatalf("silence frame contains sample %d", sample)
+		}
+	}
+
+	done := make(chan struct{})
+	router.finishInjectedAudio(done)
+	if _, active := router.takeInjectedFrame(); active {
+		t.Fatal("injected audio should release after completion marker")
+	}
+	select {
+	case <-done:
+	default:
+		t.Fatal("injected audio completion was not acknowledged")
+	}
+}
+
 func TestRouteMixedAudioMixesRFAndInterfaceButDoesNotReturnInterfaceInput(t *testing.T) {
 	serverConn, err := net.ListenUDP("udp", nil)
 	if err != nil {
@@ -151,6 +177,7 @@ func TestRouteMixedAudioMixesRFAndInterfaceButDoesNotReturnInterfaceInput(t *tes
 			RemoteAddr:  interfaceConn.LocalAddr().(*net.UDPAddr),
 			Config: models.Config{Entries: []models.ConfigEntry{
 				{Key: "RouteToBroadcast", Type: models.ApplicationTypeInterface, Var: models.EntryVar{Type: models.EntryTypeBool, Data: true}},
+				{Key: "RouteToInterface", Type: models.ApplicationTypeInterface, Var: models.EntryVar{Type: models.EntryTypeBool, Data: false}},
 			}},
 		},
 		11: {
@@ -201,6 +228,85 @@ func TestRouteMixedAudioMixesRFAndInterfaceButDoesNotReturnInterfaceInput(t *tes
 	}
 	if packet := receiveRoutedAudioPacket(t, interfaceConn); packet.Samples[0] != 2000 {
 		t.Fatalf("interface output sample = %d, want RF-only 2000", packet.Samples[0])
+	}
+}
+
+func TestRouteMixedAudioOverridesBroadcastWithInjectedFrame(t *testing.T) {
+	serverConn, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		t.Fatalf("listen server UDP socket: %v", err)
+	}
+	defer serverConn.Close()
+
+	broadcastConn, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		t.Fatalf("listen broadcast UDP socket: %v", err)
+	}
+	defer broadcastConn.Close()
+	interfaceConn, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		t.Fatalf("listen interface UDP socket: %v", err)
+	}
+	defer interfaceConn.Close()
+
+	now := time.Now()
+	peersMu.Lock()
+	originalPeers := peers
+	peers = map[uint16]*models.NetworkPeer{
+		10: {
+			PeerID:         10,
+			NodeType:       models.ApplicationTypeListen,
+			HasRSSI:        true,
+			LastRSSI:       -20,
+			HasAudio:       true,
+			AudioStartedAt: now,
+			LastAudioAt:    now,
+			RemoteAddr:     interfaceConn.LocalAddr().(*net.UDPAddr),
+			Config: models.Config{Entries: []models.ConfigEntry{
+				{Key: "RouteToBroadcast", Type: models.ApplicationTypeListen, Var: models.EntryVar{Type: models.EntryTypeBool, Data: true}},
+				{Key: "RouteToInterface", Type: models.ApplicationTypeListen, Var: models.EntryVar{Type: models.EntryTypeBool, Data: true}},
+			}},
+		},
+		11: {
+			PeerID:     11,
+			NodeType:   models.ApplicationTypeInterface,
+			RemoteAddr: interfaceConn.LocalAddr().(*net.UDPAddr),
+		},
+		12: {
+			PeerID:     12,
+			NodeType:   models.ApplicationTypeBroadcast,
+			RemoteAddr: broadcastConn.LocalAddr().(*net.UDPAddr),
+		},
+	}
+	peersMu.Unlock()
+
+	originalRouter := audioRouter
+	originalActive := activeSourcePeerID.Swap(0)
+	audioRouter = newMixedAudioRouter()
+	t.Cleanup(func() {
+		audioRouter = originalRouter
+		activeSourcePeerID.Store(originalActive)
+		peersMu.Lock()
+		peers = originalPeers
+		peersMu.Unlock()
+	})
+
+	normalSamples := make([]int16, audioMixFrameSamples)
+	injectedSamples := make([]int16, audioMixFrameSamples)
+	for index := range normalSamples {
+		normalSamples[index] = 1000
+		injectedSamples[index] = 7000
+	}
+	audioRouter.push(10, &network.ToAnyAudioChunkPacket{SampleRate: audioMixSampleRate, Samples: normalSamples})
+	audioRouter.enqueueInjectedFrame(injectedSamples)
+
+	routeMixedAudio(serverConn)
+
+	if packet := receiveRoutedAudioPacket(t, broadcastConn); packet.Samples[0] != 7000 {
+		t.Fatalf("broadcast injected sample = %d, want 7000", packet.Samples[0])
+	}
+	if packet := receiveRoutedAudioPacket(t, interfaceConn); packet.Samples[0] != 1000 {
+		t.Fatalf("interface normal sample = %d, want 1000", packet.Samples[0])
 	}
 }
 

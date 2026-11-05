@@ -27,6 +27,7 @@ var (
 	peersMu            sync.RWMutex
 	activeSourcePeerID atomic.Uint32
 	conn               *net.UDPConn
+	audioEvents        *audioEventManager
 )
 
 const (
@@ -73,6 +74,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+	audioEvents, err = newAudioEventManager(audioEventMediaDir)
+	if err != nil {
+		log.Fatalf("Failed to initialize audio events: %v", err)
+	}
+	audioEvents.startScheduler()
 
 	go heartbeatLoop()
 	go audioRouterLoop()
@@ -90,11 +96,15 @@ func startWebServer() {
 	}
 
 	panel, err := web.NewServer(web.Options{
-		Addr:          fmt.Sprintf("0.0.0.0:%d", webPort),
-		AdminUsername: adminUsername,
-		AdminPassword: adminPassword,
-		GetNodes:      getNodeStatuses,
-		SaveConfig:    applyNodeConfigUpdate,
+		Addr:             fmt.Sprintf("0.0.0.0:%d", webPort),
+		AdminUsername:    adminUsername,
+		AdminPassword:    adminPassword,
+		MediaDir:         audioEventMediaDir,
+		GetNodes:         getNodeStatuses,
+		SaveConfig:       applyNodeConfigUpdate,
+		GetAudioEvents:   audioEvents.list,
+		SaveAudioEvent:   audioEvents.save,
+		DeleteAudioEvent: audioEvents.delete,
 	})
 	if err != nil {
 		log.Fatalf("Failed to initialize API server: %v", err)

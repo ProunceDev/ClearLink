@@ -97,7 +97,7 @@ func main() {
 	go func() {
 		<-ctx.Done()
 		fmt.Println("\rShutting down client.")
-		stopAudioRecorder()
+		//stopAudioRecorder()
 		closeAllNodeAudioStreams()
 		closeDiscordPlayer()
 		if radioPlayer != nil {
@@ -130,7 +130,7 @@ func main() {
 	if err := ensureAudioOutputDir(); err != nil {
 		log.Fatalf("Failed to initialize recordings directory: %v", err)
 	}
-	startAudioRecorder()
+	//startAudioRecorder()
 
 	// Initialize output mode
 	broadcastType := config.GetConfigValue("Type", models.ApplicationTypeBroadcast).(string)
@@ -313,8 +313,8 @@ func receiveLoop(audioOutputGain float64) {
 					fmt.Printf("Received termination from server. Reason: %s\n", termPkt.Reason)
 				}
 				closeAllNodeAudioStreams()
-				stopAudioRecorder()
-				startAudioRecorder()
+				//stopAudioRecorder()
+				//startAudioRecorder()
 				if radioPlayer != nil {
 					radioPlayer.NotifyTransmitStop()
 				}

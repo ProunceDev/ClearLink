@@ -124,6 +124,18 @@ type MediaAsset struct {
 	StreamURL  string `json:"streamUrl"`
 }
 
+type AudioEvent struct {
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	Type            string   `json:"type"`
+	Enabled         bool     `json:"enabled"`
+	MediaIDs        []string `json:"mediaIds"`
+	IntervalSeconds int      `json:"intervalSeconds"`
+	ScheduleAt      string   `json:"scheduleAt"`
+	SourcePeerID    uint16   `json:"sourcePeerId"`
+	SourceNodeType  string   `json:"sourceNodeType"`
+}
+
 type mediaMetadata struct {
 	ID         string    `json:"id"`
 	Name       string    `json:"name"`
@@ -131,21 +143,27 @@ type mediaMetadata struct {
 }
 
 type Options struct {
-	Addr          string
-	AdminUsername string
-	AdminPassword string
-	MediaDir      string
-	GetNodes      func() []NodeStatus
-	SaveConfig    func(peerID uint16, key, applicationType, value string) error
+	Addr             string
+	AdminUsername    string
+	AdminPassword    string
+	MediaDir         string
+	GetNodes         func() []NodeStatus
+	SaveConfig       func(peerID uint16, key, applicationType, value string) error
+	GetAudioEvents   func() []AudioEvent
+	SaveAudioEvent   func(event AudioEvent) (AudioEvent, error)
+	DeleteAudioEvent func(eventID string) error
 }
 
 type Server struct {
-	addr       string
-	username   string
-	password   string
-	mediaDir   string
-	getNodes   func() []NodeStatus
-	saveConfig func(peerID uint16, key, applicationType, value string) error
+	addr             string
+	username         string
+	password         string
+	mediaDir         string
+	getNodes         func() []NodeStatus
+	saveConfig       func(peerID uint16, key, applicationType, value string) error
+	getAudioEvents   func() []AudioEvent
+	saveAudioEvent   func(event AudioEvent) (AudioEvent, error)
+	deleteAudioEvent func(eventID string) error
 }
 
 func NewServer(options Options) (*Server, error) {
@@ -164,12 +182,15 @@ func NewServer(options Options) (*Server, error) {
 		return nil, fmt.Errorf("create media directory: %w", err)
 	}
 	return &Server{
-		addr:       addr,
-		username:   options.AdminUsername,
-		password:   options.AdminPassword,
-		mediaDir:   mediaDir,
-		getNodes:   options.GetNodes,
-		saveConfig: options.SaveConfig,
+		addr:             addr,
+		username:         options.AdminUsername,
+		password:         options.AdminPassword,
+		mediaDir:         mediaDir,
+		getNodes:         options.GetNodes,
+		saveConfig:       options.SaveConfig,
+		getAudioEvents:   options.GetAudioEvents,
+		saveAudioEvent:   options.SaveAudioEvent,
+		deleteAudioEvent: options.DeleteAudioEvent,
 	}, nil
 }
 
@@ -192,6 +213,8 @@ func (s *Server) Start() {
 	mux.HandleFunc("/api/admin/config/bulk", s.handleAdminBulkConfig)
 	mux.HandleFunc("/api/admin/media", s.handleAdminMedia)
 	mux.HandleFunc("/api/admin/media/", s.handleAdminMediaItem)
+	mux.HandleFunc("/api/admin/audio-events", s.handleAdminAudioEvents)
+	mux.HandleFunc("/api/admin/audio-events/", s.handleAdminAudioEventItem)
 	mux.HandleFunc("/api/health", s.handleHealth)
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -493,6 +516,72 @@ func (s *Server) handleAdminBulkConfig(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(response)
+}
+
+func (s *Server) handleAdminAudioEvents(w http.ResponseWriter, r *http.Request) {
+	if !s.isAuthorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if s.getAudioEvents == nil {
+		http.Error(w, "audio events are not configured", http.StatusNotImplemented)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(s.getAudioEvents())
+	case http.MethodPost:
+		if s.saveAudioEvent == nil {
+			http.Error(w, "audio event save handler is not configured", http.StatusNotImplemented)
+			return
+		}
+		var event AudioEvent
+		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+			http.Error(w, "invalid audio event payload", http.StatusBadRequest)
+			return
+		}
+		savedEvent, err := s.saveAudioEvent(event)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(savedEvent)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleAdminAudioEventItem(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.isAuthorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if s.deleteAudioEvent == nil {
+		http.Error(w, "audio event delete handler is not configured", http.StatusNotImplemented)
+		return
+	}
+
+	eventID := strings.TrimPrefix(r.URL.Path, "/api/admin/audio-events/")
+	if !isValidMediaID(eventID) {
+		http.NotFound(w, r)
+		return
+	}
+	if err := s.deleteAudioEvent(eventID); err != nil {
+		if os.IsNotExist(err) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleAdminMedia(w http.ResponseWriter, r *http.Request) {

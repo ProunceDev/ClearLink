@@ -6,6 +6,8 @@ import 'package:http/http.dart' as http;
 
 import 'media_support.dart';
 
+part 'audio_events_tab.dart';
+
 void main() {
   runApp(const ClearLinkAdminApp());
 }
@@ -479,13 +481,60 @@ class AdminApi {
         .toList();
   }
 
-  Future<MediaAsset> uploadMedia(SelectedMediaFile file) async {
-    final request = http.MultipartRequest('POST', _uri('/api/admin/media'));
-    request.files.add(
-      http.MultipartFile.fromBytes('file', file.bytes, filename: file.name),
+  Future<List<ServerAudioEvent>> fetchAudioEvents() async {
+    final response = await http.get(_uri('/api/admin/audio-events'));
+    _ensureSuccess(response, const [200], 'Unable to load audio events');
+    final decoded = jsonDecode(response.body);
+    if (decoded is! List) {
+      throw const AdminApiException(
+        'The admin API returned invalid audio event data',
+      );
+    }
+    return decoded
+        .map(
+          (entry) => ServerAudioEvent.fromJson(entry as Map<String, dynamic>),
+        )
+        .toList();
+  }
+
+  Future<ServerAudioEvent> saveAudioEvent(ServerAudioEvent event) async {
+    final response = await http.post(
+      _uri('/api/admin/audio-events'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode(event.toJson()),
     );
-    final response = await http.Response.fromStream(await request.send());
-    _ensureSuccess(response, const [201], 'Unable to upload ${file.name}');
+    _ensureSuccess(response, const [200], 'Unable to save audio event');
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic>) {
+      throw const AdminApiException(
+        'The admin API returned invalid audio event data',
+      );
+    }
+    return ServerAudioEvent.fromJson(decoded);
+  }
+
+  Future<void> deleteAudioEvent(String eventId) async {
+    final response = await http.delete(
+      _uri('/api/admin/audio-events/$eventId'),
+    );
+    _ensureSuccess(response, const [204], 'Unable to delete audio event');
+  }
+
+  Future<MediaAsset> uploadMedia(
+    SelectedMediaFile file, {
+    void Function(int sentBytes, int totalBytes)? onProgress,
+  }) async {
+    final response = await uploadMp3File(
+      _uri('/api/admin/media'),
+      file,
+      onProgress: onProgress,
+    );
+    if (response.statusCode != 201) {
+      final message = response.body.trim().isEmpty
+          ? 'Unable to upload ${file.name}'
+          : response.body.trim();
+      throw AdminApiException(message, statusCode: response.statusCode);
+    }
     final decoded = jsonDecode(response.body);
     if (decoded is! Map<String, dynamic>) {
       throw const AdminApiException(
@@ -557,6 +606,97 @@ class MediaAsset {
   }
 }
 
+class ServerAudioEvent {
+  final String id;
+  final String name;
+  final String type;
+  final bool enabled;
+  final List<String> mediaIds;
+  final int intervalSeconds;
+  final String scheduleAt;
+  final int sourcePeerId;
+  final String sourceNodeType;
+
+  const ServerAudioEvent({
+    required this.id,
+    required this.name,
+    required this.type,
+    required this.enabled,
+    required this.mediaIds,
+    required this.intervalSeconds,
+    required this.scheduleAt,
+    required this.sourcePeerId,
+    required this.sourceNodeType,
+  });
+
+  factory ServerAudioEvent.empty() {
+    return const ServerAudioEvent(
+      id: '',
+      name: '',
+      type: 'repeater_id',
+      enabled: true,
+      mediaIds: [],
+      intervalSeconds: 900,
+      scheduleAt: '',
+      sourcePeerId: 0,
+      sourceNodeType: 'all',
+    );
+  }
+
+  factory ServerAudioEvent.fromJson(Map<String, dynamic> json) {
+    final mediaIds = json['mediaIds'] as List? ?? const [];
+    return ServerAudioEvent(
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String? ?? '',
+      type: json['type'] as String? ?? 'repeater_id',
+      enabled: json['enabled'] as bool? ?? false,
+      mediaIds: mediaIds.whereType<String>().toList(),
+      intervalSeconds: (json['intervalSeconds'] as num?)?.toInt() ?? 0,
+      scheduleAt: json['scheduleAt'] as String? ?? '',
+      sourcePeerId: (json['sourcePeerId'] as num?)?.toInt() ?? 0,
+      sourceNodeType: json['sourceNodeType'] as String? ?? 'all',
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'name': name,
+      'type': type,
+      'enabled': enabled,
+      'mediaIds': mediaIds,
+      'intervalSeconds': intervalSeconds,
+      'scheduleAt': scheduleAt,
+      'sourcePeerId': sourcePeerId,
+      'sourceNodeType': sourceNodeType,
+    };
+  }
+
+  ServerAudioEvent copyWith({
+    String? id,
+    String? name,
+    String? type,
+    bool? enabled,
+    List<String>? mediaIds,
+    int? intervalSeconds,
+    String? scheduleAt,
+    int? sourcePeerId,
+    String? sourceNodeType,
+  }) {
+    return ServerAudioEvent(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      type: type ?? this.type,
+      enabled: enabled ?? this.enabled,
+      mediaIds: mediaIds ?? this.mediaIds,
+      intervalSeconds: intervalSeconds ?? this.intervalSeconds,
+      scheduleAt: scheduleAt ?? this.scheduleAt,
+      sourcePeerId: sourcePeerId ?? this.sourcePeerId,
+      sourceNodeType: sourceNodeType ?? this.sourceNodeType,
+    );
+  }
+}
+
 class AdminWorkspacePage extends StatefulWidget {
   final AdminApi api;
   final List<NodeConfigViewModel> initialNodes;
@@ -612,7 +752,7 @@ class _AdminWorkspacePageState extends State<AdminWorkspacePage> {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 2,
+      length: 3,
       child: Scaffold(
         backgroundColor: const Color(0xFF0A1120),
         appBar: AppBar(
@@ -664,6 +804,10 @@ class _AdminWorkspacePageState extends State<AdminWorkspacePage> {
                 icon: Icon(Icons.library_music_outlined),
                 text: 'Media library',
               ),
+              Tab(
+                icon: Icon(Icons.notifications_active_outlined),
+                text: 'Audio events',
+              ),
             ],
           ),
         ),
@@ -683,6 +827,7 @@ class _AdminWorkspacePageState extends State<AdminWorkspacePage> {
                 onRefresh: _refreshNodes,
               ),
               MediaLibraryTab(api: widget.api),
+              AudioEventsTab(api: widget.api, nodes: _nodes),
             ],
           ),
         ),
@@ -1522,25 +1667,61 @@ class _MediaLibraryTabState extends State<MediaLibraryTab> {
 
   Future<void> _upload() async {
     if (_isUploading) return;
-    final file = await chooseMp3File();
-    if (file == null || !mounted) return;
-
     setState(() => _isUploading = true);
+    SelectedMediaFile? file;
     try {
-      final asset = await widget.api.uploadMedia(file);
+      file = await chooseMp3File();
+    } catch (_) {
+      if (mounted) {
+        setState(() => _isUploading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Unable to open the MP3 file picker')),
+        );
+      }
+      return;
+    }
+    if (file == null || !mounted) {
+      if (mounted) {
+        setState(() => _isUploading = false);
+      }
+      return;
+    }
+
+    final uploadState = ValueNotifier<_MediaUploadState>(
+      _MediaUploadState.uploading(file.name),
+    );
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => _MediaUploadDialog(state: uploadState),
+    ).whenComplete(uploadState.dispose);
+
+    try {
+      final asset = await widget.api.uploadMedia(
+        file,
+        onProgress: (sentBytes, totalBytes) {
+          uploadState.value = uploadState.value.copyWith(
+            sentBytes: sentBytes,
+            totalBytes: totalBytes,
+          );
+        },
+      );
       if (!mounted) return;
       await _loadMedia();
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('${asset.name} uploaded')));
+      uploadState.value = uploadState.value.copyWith(
+        completed: true,
+        message: '${asset.name} is ready in the media library.',
+      );
     } on AdminApiException catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(error.message)));
+      uploadState.value = uploadState.value.copyWith(
+        errorMessage: error.message,
+      );
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Unable to upload MP3 file')),
+      uploadState.value = uploadState.value.copyWith(
+        errorMessage: 'Unable to upload the MP3 file. Check the connection and try again.',
       );
     } finally {
       if (mounted) {
@@ -1715,6 +1896,137 @@ class _MediaLibraryTabState extends State<MediaLibraryTab> {
             ),
         ],
       ),
+    );
+  }
+}
+
+class _MediaUploadState {
+  final String fileName;
+  final int sentBytes;
+  final int totalBytes;
+  final bool completed;
+  final String? message;
+  final String? errorMessage;
+
+  const _MediaUploadState({
+    required this.fileName,
+    this.sentBytes = 0,
+    this.totalBytes = 0,
+    this.completed = false,
+    this.message,
+    this.errorMessage,
+  });
+
+  factory _MediaUploadState.uploading(String fileName) {
+    return _MediaUploadState(fileName: fileName);
+  }
+
+  bool get isTerminal => completed || errorMessage != null;
+
+  double? get progress {
+    if (totalBytes <= 0) return null;
+    return (sentBytes / totalBytes).clamp(0, 1);
+  }
+
+  _MediaUploadState copyWith({
+    int? sentBytes,
+    int? totalBytes,
+    bool? completed,
+    String? message,
+    String? errorMessage,
+  }) {
+    return _MediaUploadState(
+      fileName: fileName,
+      sentBytes: sentBytes ?? this.sentBytes,
+      totalBytes: totalBytes ?? this.totalBytes,
+      completed: completed ?? this.completed,
+      message: message ?? this.message,
+      errorMessage: errorMessage ?? this.errorMessage,
+    );
+  }
+}
+
+class _MediaUploadDialog extends StatelessWidget {
+  final ValueNotifier<_MediaUploadState> state;
+
+  const _MediaUploadDialog({required this.state});
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<_MediaUploadState>(
+      valueListenable: state,
+      builder: (context, upload, _) {
+        final progressPercent = upload.progress == null
+            ? null
+            : (upload.progress! * 100).round();
+        final status =
+            upload.errorMessage ??
+            upload.message ??
+            (progressPercent == null
+                ? 'Uploading to the ClearLink server...'
+                : 'Uploading... $progressPercent%');
+
+        return PopScope(
+          canPop: upload.isTerminal,
+          child: AlertDialog(
+            backgroundColor: const Color(0xFF101A2E),
+            title: Row(
+              children: [
+                Icon(
+                  upload.errorMessage != null
+                      ? Icons.error_outline
+                      : upload.completed
+                      ? Icons.check_circle_outline
+                      : Icons.cloud_upload_outlined,
+                  color: upload.errorMessage != null
+                      ? const Color(0xFFFCA5A5)
+                      : upload.completed
+                      ? const Color(0xFF86EFAC)
+                      : const Color(0xFF67E8F9),
+                ),
+                const SizedBox(width: 10),
+                const Text('MP3 upload', style: TextStyle(color: Colors.white)),
+              ],
+            ),
+            content: SizedBox(
+              width: 360,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    upload.fileName,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  LinearProgressIndicator(value: upload.progress),
+                  const SizedBox(height: 12),
+                  Text(
+                    status,
+                    style: TextStyle(
+                      color: upload.errorMessage != null
+                          ? const Color(0xFFFCA5A5)
+                          : const Color(0xFFA9B7C9),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              if (upload.isTerminal)
+                FilledButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Done'),
+                ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

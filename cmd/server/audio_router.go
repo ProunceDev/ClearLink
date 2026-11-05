@@ -11,10 +11,11 @@ import (
 )
 
 const (
-	audioMixSampleRate    uint32 = 48000
-	audioMixFrameDuration        = 20 * time.Millisecond
-	audioMixFrameSamples         = int(audioMixSampleRate) / 50
-	maxQueuedAudioSamples        = audioMixFrameSamples * 6
+	audioMixSampleRate           uint32 = 48000
+	audioMixFrameDuration               = 20 * time.Millisecond
+	audioMixFrameSamples                = int(audioMixSampleRate) / 50
+	maxQueuedAudioSamples               = audioMixFrameSamples * 6
+	maxQueuedInjectedAudioFrames        = 150
 )
 
 type audioRouteSource struct {
@@ -35,11 +36,18 @@ type audioSourceBuffer struct {
 	samples []int16
 }
 
+type injectedAudioFrame struct {
+	samples []int16
+	done    chan<- struct{}
+}
+
 type mixedAudioRouter struct {
 	mu                sync.Mutex
 	sources           map[uint16]*audioSourceBuffer
 	nextChunkNumber   map[uint16]uint32
 	destinationActive map[uint16]bool
+	injectedFrames    chan injectedAudioFrame
+	injectedActive    bool
 }
 
 func newMixedAudioRouter() *mixedAudioRouter {
@@ -47,6 +55,7 @@ func newMixedAudioRouter() *mixedAudioRouter {
 		sources:           make(map[uint16]*audioSourceBuffer),
 		nextChunkNumber:   make(map[uint16]uint32),
 		destinationActive: make(map[uint16]bool),
+		injectedFrames:    make(chan injectedAudioFrame, maxQueuedInjectedAudioFrames),
 	}
 }
 
@@ -88,6 +97,44 @@ func (router *mixedAudioRouter) removePeer(peerID uint16) {
 	delete(router.nextChunkNumber, peerID)
 	delete(router.destinationActive, peerID)
 	router.mu.Unlock()
+}
+
+func (router *mixedAudioRouter) enqueueInjectedFrame(samples []int16) {
+	frame := make([]int16, audioMixFrameSamples)
+	copy(frame, samples)
+	router.injectedFrames <- injectedAudioFrame{samples: frame}
+}
+
+func (router *mixedAudioRouter) beginInjectedAudio() {
+	router.mu.Lock()
+	router.injectedActive = true
+	router.mu.Unlock()
+}
+
+func (router *mixedAudioRouter) finishInjectedAudio(done chan<- struct{}) {
+	router.injectedFrames <- injectedAudioFrame{done: done}
+}
+
+func (router *mixedAudioRouter) takeInjectedFrame() ([]int16, bool) {
+	select {
+	case frame := <-router.injectedFrames:
+		if frame.done != nil {
+			router.mu.Lock()
+			router.injectedActive = false
+			router.mu.Unlock()
+			close(frame.done)
+			return nil, false
+		}
+		return frame.samples, true
+	default:
+		router.mu.Lock()
+		active := router.injectedActive
+		router.mu.Unlock()
+		if active {
+			return make([]int16, audioMixFrameSamples), true
+		}
+		return nil, false
+	}
 }
 
 func (router *mixedAudioRouter) discardInactiveSources(sources []audioRouteSource) {
@@ -144,9 +191,29 @@ func (router *mixedAudioRouter) nextPacket(destinationPeerID uint16, active bool
 
 func routeMixedAudio(conn *net.UDPConn) {
 	activeListenPeerID := refreshActiveAudioSource()
-	sources, destinations := audioRoutingSnapshot(time.Now(), activeListenPeerID)
+	now := time.Now()
+	sources, destinations := audioRoutingSnapshot(now, activeListenPeerID)
 	audioRouter.discardInactiveSources(sources)
 	frames := audioRouter.takeFrames(sources)
+	broadcastSource := activeBroadcastSource(sources)
+	hasBroadcastDestination := false
+	for _, destination := range destinations {
+		if destination.nodeType == models.ApplicationTypeBroadcast {
+			hasBroadcastDestination = true
+			break
+		}
+	}
+	if audioEvents != nil {
+		audioEvents.observeNormalBroadcast(
+			hasBroadcastDestination && broadcastSource != nil,
+			broadcastSource,
+			now,
+		)
+	}
+	injectedFrame, hasInjectedFrame := audioRouter.takeInjectedFrame()
+	if audioEvents != nil && hasBroadcastDestination && hasInjectedFrame {
+		audioEvents.recordInjectedBroadcastActivity(now)
+	}
 
 	for _, destination := range destinations {
 		destinationFrames := make([][]int16, 0, len(sources))
@@ -160,6 +227,10 @@ func routeMixedAudio(conn *net.UDPConn) {
 		mixed := []int16(nil)
 		if active {
 			mixed = mixPCM16(destinationFrames)
+		}
+		if destination.nodeType == models.ApplicationTypeBroadcast && hasInjectedFrame {
+			active = true
+			mixed = injectedFrame
 		}
 		packet, shouldSend := audioRouter.nextPacket(destination.peerID, active, mixed)
 		if !shouldSend {
@@ -180,6 +251,16 @@ func routeMixedAudio(conn *net.UDPConn) {
 			fmt.Printf("Failed to route mixed audio to peer %d: %v\n", destination.peerID, err)
 		}
 	}
+}
+
+func activeBroadcastSource(sources []audioRouteSource) *audioRouteSource {
+	for _, source := range sources {
+		if source.routeToBroadcast {
+			selected := source
+			return &selected
+		}
+	}
+	return nil
 }
 
 func audioRoutingSnapshot(now time.Time, activeListenPeerID uint16) ([]audioRouteSource, []audioRouteDestination) {

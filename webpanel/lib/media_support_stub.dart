@@ -8,7 +8,22 @@ class SelectedMediaFile {
   const SelectedMediaFile({required this.name, required this.bytes});
 }
 
+class MediaUploadResponse {
+  final int statusCode;
+  final String body;
+
+  const MediaUploadResponse({required this.statusCode, required this.body});
+}
+
 Future<SelectedMediaFile?> chooseMp3File() async => null;
+
+Future<MediaUploadResponse> uploadMp3File(
+  Uri url,
+  SelectedMediaFile file, {
+  void Function(int sentBytes, int totalBytes)? onProgress,
+}) async {
+  throw UnsupportedError('MP3 uploads are available in the web panel only');
+}
 
 abstract class MediaPlayer {
   Stream<void> get onEnded;

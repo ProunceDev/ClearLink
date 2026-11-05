@@ -192,3 +192,82 @@ func TestAdminSessionBulkConfigAndMediaLifecycle(t *testing.T) {
 		t.Fatalf("media delete status = %d, want %d", deleteResponse.Code, http.StatusNoContent)
 	}
 }
+
+func TestAdminAudioEventHandlers(t *testing.T) {
+	const eventID = "0123456789abcdef0123456789abcdef"
+	events := []AudioEvent{{
+		ID:              eventID,
+		Name:            "Evening ID",
+		Type:            "repeater_id",
+		Enabled:         true,
+		MediaIDs:        []string{"abcdef0123456789abcdef0123456789"},
+		IntervalSeconds: 900,
+		SourceNodeType:  "all",
+	}}
+	var saved AudioEvent
+	var deletedID string
+	server, err := NewServer(Options{
+		AdminUsername: "admin",
+		AdminPassword: "secret",
+		MediaDir:      t.TempDir(),
+		GetNodes:      func() []NodeStatus { return nil },
+		GetAudioEvents: func() []AudioEvent {
+			return events
+		},
+		SaveAudioEvent: func(event AudioEvent) (AudioEvent, error) {
+			if event.ID == "" {
+				event.ID = eventID
+			}
+			saved = event
+			return event, nil
+		},
+		DeleteAudioEvent: func(id string) error {
+			deletedID = id
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/api/admin/audio-events", nil)
+	listRequest.SetBasicAuth("admin", "secret")
+	listResponse := httptest.NewRecorder()
+	server.handleAdminAudioEvents(listResponse, listRequest)
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("audio event list status = %d, want %d", listResponse.Code, http.StatusOK)
+	}
+	var listed []AudioEvent
+	if err := json.NewDecoder(listResponse.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode audio event list: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != eventID {
+		t.Fatalf("audio events = %+v, want saved event", listed)
+	}
+
+	saveRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/api/admin/audio-events",
+		strings.NewReader(`{"name":"Dispatch start","type":"pre_roger_beep","enabled":true,"mediaIds":["abcdef0123456789abcdef0123456789"],"sourceNodeType":"listen"}`),
+	)
+	saveRequest.SetBasicAuth("admin", "secret")
+	saveResponse := httptest.NewRecorder()
+	server.handleAdminAudioEvents(saveResponse, saveRequest)
+	if saveResponse.Code != http.StatusOK {
+		t.Fatalf("audio event save status = %d, want %d: %s", saveResponse.Code, http.StatusOK, saveResponse.Body.String())
+	}
+	if saved.ID != eventID || saved.Type != "pre_roger_beep" || saved.SourceNodeType != "listen" {
+		t.Fatalf("saved audio event = %+v, want request with generated ID", saved)
+	}
+
+	deleteRequest := httptest.NewRequest(http.MethodDelete, "/api/admin/audio-events/"+eventID, nil)
+	deleteRequest.SetBasicAuth("admin", "secret")
+	deleteResponse := httptest.NewRecorder()
+	server.handleAdminAudioEventItem(deleteResponse, deleteRequest)
+	if deleteResponse.Code != http.StatusNoContent {
+		t.Fatalf("audio event delete status = %d, want %d", deleteResponse.Code, http.StatusNoContent)
+	}
+	if deletedID != eventID {
+		t.Fatalf("deleted event ID = %q, want %q", deletedID, eventID)
+	}
+}
