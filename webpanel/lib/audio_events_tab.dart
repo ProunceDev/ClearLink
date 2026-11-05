@@ -94,6 +94,45 @@ class _AudioEventsTabState extends State<AudioEventsTab> {
     }
   }
 
+  Future<void> _setVolume(ServerAudioEvent event, int percent) async {
+    final originalEvents = _events;
+    setState(() {
+      _events = _events
+          .map(
+            (item) => item.id == event.id
+                ? event.copyWith(volumePercent: percent)
+                : item,
+          )
+          .toList();
+    });
+    try {
+      await widget.api.saveAudioEvent(event.copyWith(volumePercent: percent));
+    } on AdminApiException catch (error) {
+      if (!mounted) return;
+      setState(() => _events = originalEvents);
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(error.message)));
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _events = originalEvents);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Unable to update audio event volume')),
+      );
+    }
+  }
+
+  void _previewVolume(ServerAudioEvent event, int percent) {
+    setState(() {
+      _events = _events
+          .map(
+            (item) => item.id == event.id
+                ? item.copyWith(volumePercent: percent)
+                : item,
+          )
+          .toList();
+    });
+  }
+
   Future<void> _playNow(ServerAudioEvent event) async {
     if (_startingEventId != null) return;
     setState(() => _startingEventId = event.id);
@@ -269,6 +308,8 @@ class _AudioEventsTabState extends State<AudioEventsTab> {
                     onEdit: () => _edit(event),
                     onDelete: () => _delete(event),
                     onEnabledChanged: (value) => _toggle(event, value),
+                    onVolumeChanged: (value) => _previewVolume(event, value),
+                    onVolumeChangeEnd: (value) => _setVolume(event, value),
                     isStarting: _startingEventId == event.id,
                     isPlayDisabled: _startingEventId != null,
                     onPlayNow: () => _playNow(event),
@@ -288,6 +329,8 @@ class _AudioEventCard extends StatelessWidget {
   final VoidCallback onEdit;
   final VoidCallback onDelete;
   final ValueChanged<bool> onEnabledChanged;
+  final ValueChanged<int> onVolumeChanged;
+  final ValueChanged<int> onVolumeChangeEnd;
   final bool isStarting;
   final bool isPlayDisabled;
   final VoidCallback onPlayNow;
@@ -298,6 +341,8 @@ class _AudioEventCard extends StatelessWidget {
     required this.onEdit,
     required this.onDelete,
     required this.onEnabledChanged,
+    required this.onVolumeChanged,
+    required this.onVolumeChangeEnd,
     required this.isStarting,
     required this.isPlayDisabled,
     required this.onPlayNow,
@@ -370,6 +415,33 @@ class _AudioEventCard extends StatelessWidget {
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(color: Colors.white70, fontSize: 12),
+            ),
+          ),
+          SizedBox(
+            width: 200,
+            child: Row(
+              children: [
+                const Icon(Icons.volume_up_outlined, size: 18),
+                Expanded(
+                  child: Slider(
+                    value: event.volumePercent.clamp(1, 200).toDouble(),
+                    min: 1,
+                    max: 200,
+                    divisions: 199,
+                    label: '${event.volumePercent}%',
+                    onChanged: (value) => onVolumeChanged(value.round()),
+                    onChangeEnd: (value) => onVolumeChangeEnd(value.round()),
+                  ),
+                ),
+                SizedBox(
+                  width: 40,
+                  child: Text(
+                    '${event.volumePercent}%',
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                ),
+              ],
             ),
           ),
           Row(
@@ -447,6 +519,8 @@ class _AudioEventEditorDialogState extends State<AudioEventEditorDialog> {
   late String _scheduleAt;
   late String _sourceNodeType;
   late int _sourcePeerId;
+  late String _outputNodeType;
+  late int _outputPeerId;
   late Set<String> _mediaIds;
   String? _errorMessage;
   bool _isSaving = false;
@@ -466,6 +540,8 @@ class _AudioEventEditorDialogState extends State<AudioEventEditorDialog> {
     _scheduleAt = event.scheduleAt;
     _sourceNodeType = event.sourceNodeType;
     _sourcePeerId = event.sourcePeerId;
+    _outputNodeType = event.outputNodeType;
+    _outputPeerId = event.outputPeerId;
     _mediaIds = event.mediaIds.toSet();
   }
 
@@ -549,6 +625,9 @@ class _AudioEventEditorDialogState extends State<AudioEventEditorDialog> {
       scheduleAt: _type == 'announcement' ? _scheduleAt : '',
       sourcePeerId: _isSourceEvent ? _sourcePeerId : 0,
       sourceNodeType: _isSourceEvent ? _sourceNodeType : 'all',
+      outputNodeType: _outputNodeType,
+      outputPeerId: _outputPeerId,
+      volumePercent: existing.volumePercent,
     );
     try {
       final saved = await widget.api.saveAudioEvent(event);
@@ -575,6 +654,16 @@ class _AudioEventEditorDialogState extends State<AudioEventEditorDialog> {
     final sourceNodes = _eligibleSourceNodes;
     final sourcePeerId = sourceNodes.any((node) => node.peerId == _sourcePeerId)
         ? _sourcePeerId
+        : 0;
+    final outputNodes = widget.nodes
+        .where(
+          (node) =>
+              (node.nodeType == 'broadcast' || node.nodeType == 'interface') &&
+              (_outputNodeType == 'all' || node.nodeType == _outputNodeType),
+        )
+        .toList();
+    final outputPeerId = outputNodes.any((node) => node.peerId == _outputPeerId)
+        ? _outputPeerId
         : 0;
 
     return AlertDialog(
@@ -711,6 +800,50 @@ class _AudioEventEditorDialogState extends State<AudioEventEditorDialog> {
                       setState(() => _sourcePeerId = value ?? 0),
                 ),
               ],
+              const SizedBox(height: 16),
+              DropdownButtonFormField<String>(
+                key: ValueKey('audio-event-output-$_outputNodeType'),
+                initialValue: _outputNodeType,
+                decoration: const InputDecoration(labelText: 'Output type'),
+                items: const [
+                  DropdownMenuItem(value: 'all', child: Text('Any output')),
+                  DropdownMenuItem(
+                    value: 'broadcast',
+                    child: Text('Broadcast output'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'interface',
+                    child: Text('Interface output'),
+                  ),
+                ],
+                onChanged: (value) {
+                  setState(() {
+                    _outputNodeType = value ?? 'all';
+                    _outputPeerId = 0;
+                  });
+                },
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<int>(
+                key: ValueKey('audio-event-output-peer-$outputPeerId'),
+                initialValue: outputPeerId,
+                decoration: const InputDecoration(
+                  labelText: 'Specific output node',
+                ),
+                items: [
+                  const DropdownMenuItem(
+                    value: 0,
+                    child: Text('Any matching node'),
+                  ),
+                  for (final node in outputNodes)
+                    DropdownMenuItem(
+                      value: node.peerId,
+                      child: Text('${node.name} (#${node.peerId})'),
+                    ),
+                ],
+                onChanged: (value) =>
+                    setState(() => _outputPeerId = value ?? 0),
+              ),
               const SizedBox(height: 20),
               Row(
                 children: [

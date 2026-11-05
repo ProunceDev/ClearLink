@@ -187,49 +187,70 @@ class _DashboardPageState extends State<DashboardPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const SizedBox(height: 12),
-                    Wrap(
-                      spacing: 12,
-                      runSpacing: 12,
-                      crossAxisAlignment: WrapCrossAlignment.center,
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          'Dashboard',
-                          style: Theme.of(context).textTheme.headlineMedium
-                              ?.copyWith(
-                                fontWeight: FontWeight.w700,
-                                color: Colors.white,
-                                letterSpacing: 0.5,
+                        Expanded(
+                          child: Wrap(
+                            spacing: 12,
+                            runSpacing: 12,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              Text(
+                                'Dashboard',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .headlineMedium
+                                    ?.copyWith(
+                                      fontWeight: FontWeight.w700,
+                                      color: Colors.white,
+                                      letterSpacing: 0.5,
+                                    ),
                               ),
-                        ),
-                        _MetricBadge(
-                          label: 'Listen',
-                          value: '${data.topology.listen.length}',
-                        ),
-                        _MetricBadge(
-                          label: 'Interface',
-                          value: '${data.topology.interfaceNodes.length}',
-                        ),
-                        _MetricBadge(
-                          label: 'Broadcast',
-                          value: '${data.topology.broadcast.length}',
-                        ),
-                        _MetricBadge(
-                          label: 'Active',
-                          value: '${_countActive(data.topology)}',
-                        ),
-                        IconButton(
-                          onPressed: _openAdminWorkspace,
-                          tooltip: 'Admin panel',
-                          style: IconButton.styleFrom(
-                            backgroundColor: const Color(0xFF111B2B),
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                            padding: const EdgeInsets.all(12),
+                              _MetricBadge(
+                                label: 'Listen',
+                                value: '${data.topology.listen.length}',
+                              ),
+                              _MetricBadge(
+                                label: 'Interface',
+                                value: '${data.topology.interfaceNodes.length}',
+                              ),
+                              _MetricBadge(
+                                label: 'Broadcast',
+                                value: '${data.topology.broadcast.length}',
+                              ),
+                              _MetricBadge(
+                                label: 'Active',
+                                value: '${_countActive(data.topology)}',
+                              ),
+                              IconButton(
+                                onPressed: _openAdminWorkspace,
+                                tooltip: 'Admin panel',
+                                style: IconButton.styleFrom(
+                                  backgroundColor: const Color(0xFF111B2B),
+                                  foregroundColor: Colors.white,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                  padding: const EdgeInsets.all(12),
+                                ),
+                                icon: const Icon(Icons.settings_outlined),
+                              ),
+                            ],
                           ),
-                          icon: const Icon(Icons.settings_outlined),
                         ),
+                        if (data.topology.server.version.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 8, left: 12),
+                            child: Text(
+                              'Server ${data.topology.server.version}',
+                              style: const TextStyle(
+                                color: Color(0xFF9DB6C7),
+                                fontFamily: 'monospace',
+                                fontSize: 12,
+                              ),
+                            ),
+                          ),
                       ],
                     ),
                     const SizedBox(height: 24),
@@ -623,6 +644,9 @@ class ServerAudioEvent {
   final String scheduleAt;
   final int sourcePeerId;
   final String sourceNodeType;
+  final int outputPeerId;
+  final String outputNodeType;
+  final int volumePercent;
 
   const ServerAudioEvent({
     required this.id,
@@ -634,6 +658,9 @@ class ServerAudioEvent {
     required this.scheduleAt,
     required this.sourcePeerId,
     required this.sourceNodeType,
+    this.outputPeerId = 0,
+    this.outputNodeType = 'all',
+    this.volumePercent = 100,
   });
 
   factory ServerAudioEvent.empty() {
@@ -662,6 +689,9 @@ class ServerAudioEvent {
       scheduleAt: json['scheduleAt'] as String? ?? '',
       sourcePeerId: (json['sourcePeerId'] as num?)?.toInt() ?? 0,
       sourceNodeType: json['sourceNodeType'] as String? ?? 'all',
+      outputPeerId: (json['outputPeerId'] as num?)?.toInt() ?? 0,
+      outputNodeType: json['outputNodeType'] as String? ?? 'all',
+      volumePercent: (json['volumePercent'] as num?)?.toInt() ?? 100,
     );
   }
 
@@ -676,6 +706,9 @@ class ServerAudioEvent {
       'scheduleAt': scheduleAt,
       'sourcePeerId': sourcePeerId,
       'sourceNodeType': sourceNodeType,
+      'outputPeerId': outputPeerId,
+      'outputNodeType': outputNodeType,
+      'volumePercent': volumePercent,
     };
   }
 
@@ -689,6 +722,9 @@ class ServerAudioEvent {
     String? scheduleAt,
     int? sourcePeerId,
     String? sourceNodeType,
+    int? outputPeerId,
+    String? outputNodeType,
+    int? volumePercent,
   }) {
     return ServerAudioEvent(
       id: id ?? this.id,
@@ -700,6 +736,9 @@ class ServerAudioEvent {
       scheduleAt: scheduleAt ?? this.scheduleAt,
       sourcePeerId: sourcePeerId ?? this.sourcePeerId,
       sourceNodeType: sourceNodeType ?? this.sourceNodeType,
+      outputPeerId: outputPeerId ?? this.outputPeerId,
+      outputNodeType: outputNodeType ?? this.outputNodeType,
+      volumePercent: volumePercent ?? this.volumePercent,
     );
   }
 }
@@ -2889,6 +2928,18 @@ class _NodeCard extends StatelessWidget {
                   ),
                 ),
               ),
+              if (node.version.isNotEmpty && !compact) ...[
+                const SizedBox(width: 6),
+                Text(
+                  node.version,
+                  maxLines: 1,
+                  style: const TextStyle(
+                    color: Color(0xFF9DB6C7),
+                    fontFamily: 'monospace',
+                    fontSize: 10,
+                  ),
+                ),
+              ],
             ],
           ),
           if (!isServer && (node.rssi != null || node.snr != null)) ...[
@@ -2991,6 +3042,7 @@ class PublicNode {
   final double? rssi;
   final double? snr;
   final String lastKeyUpAgo;
+  final String version;
 
   const PublicNode({
     required this.peerId,
@@ -2999,6 +3051,7 @@ class PublicNode {
     required this.rssi,
     required this.snr,
     this.lastKeyUpAgo = '',
+    this.version = '',
   });
 
   factory PublicNode.fromJson(Map<String, dynamic> json) {
@@ -3024,6 +3077,7 @@ class PublicNode {
       rssi: parsedRssi,
       snr: parsedSnr,
       lastKeyUpAgo: json['lastKeyUpAgo'] as String? ?? '',
+      version: json['version'] as String? ?? '',
     );
   }
 }

@@ -71,6 +71,7 @@ type NetworkPeer struct {
 	RemoteAddr     *net.UDPAddr
 	HasSentConf    bool
 	Name           string
+	Version        string
 	NodeType       ApplicationType
 }
 

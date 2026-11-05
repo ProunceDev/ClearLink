@@ -6,6 +6,7 @@ import (
 	"clearlink/internal/models"
 	"clearlink/internal/network"
 	sdrhelper "clearlink/internal/sdr_helper"
+	"clearlink/internal/version"
 	"context"
 	"fmt"
 	"log"
@@ -185,6 +186,7 @@ func attemptConnect() {
 		Name:            config.GetConfigValue("NodeName", models.ApplicationTypeListen).(string),
 		ProtocolVersion: network.ProtocolVersion,
 		NodeType:        models.ApplicationTypeListen,
+		Version:         version.Get(),
 	}
 
 	payload, err := hello.Marshal()

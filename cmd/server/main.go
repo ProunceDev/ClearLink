@@ -129,6 +129,7 @@ func getNodeStatuses() []web.NodeStatus {
 		node := web.NodeStatus{
 			PeerID:           peer.PeerID,
 			Name:             peer.Name,
+			Version:          peer.Version,
 			NodeType:         string(peer.NodeType),
 			RemoteAddr:       peer.RemoteAddr.String(),
 			LastHeartbeat:    peer.LastHeartbeat.Format(time.RFC3339),
@@ -452,6 +453,7 @@ func networkLoop() {
 						LastHeartbeat: time.Now(),
 						RemoteAddr:    remoteAddr,
 						Name:          packet.Name,
+						Version:       packet.Version,
 						NodeType:      packet.NodeType,
 					}
 					peersMu.Unlock()

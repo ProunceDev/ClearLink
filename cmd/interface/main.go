@@ -4,6 +4,7 @@ import (
 	"clearlink/internal/config"
 	"clearlink/internal/models"
 	"clearlink/internal/network"
+	"clearlink/internal/version"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -132,6 +133,7 @@ func attemptConnect() {
 		Name:            config.GetConfigValue("NodeName", models.ApplicationTypeInterface).(string),
 		ProtocolVersion: network.ProtocolVersion,
 		NodeType:        models.ApplicationTypeInterface,
+		Version:         version.Get(),
 	}
 	payload, err := hello.Marshal()
 	if err != nil {

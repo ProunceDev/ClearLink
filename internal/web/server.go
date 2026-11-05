@@ -1,6 +1,7 @@
 package web
 
 import (
+	"clearlink/internal/version"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -46,6 +47,7 @@ type NodeConfig struct {
 type NodeStatus struct {
 	PeerID           uint16       `json:"peerId"`
 	Name             string       `json:"name"`
+	Version          string       `json:"version"`
 	NodeType         string       `json:"nodeType"`
 	RemoteAddr       string       `json:"remoteAddr"`
 	LastHeartbeat    string       `json:"lastHeartbeat"`
@@ -60,6 +62,7 @@ type NodeStatus struct {
 type publicNode struct {
 	PeerID       uint16   `json:"peerId"`
 	Name         string   `json:"name"`
+	Version      string   `json:"version"`
 	Active       bool     `json:"active"`
 	RSSI         *float64 `json:"rssi"`
 	SNR          *float64 `json:"snr"`
@@ -134,6 +137,9 @@ type AudioEvent struct {
 	ScheduleAt      string   `json:"scheduleAt"`
 	SourcePeerID    uint16   `json:"sourcePeerId"`
 	SourceNodeType  string   `json:"sourceNodeType"`
+	OutputNodeType  string   `json:"outputNodeType"`
+	OutputPeerID    uint16   `json:"outputPeerId"`
+	VolumePercent   int      `json:"volumePercent"`
 }
 
 type mediaMetadata struct {
@@ -949,7 +955,7 @@ func buildPublicTopology(nodes []NodeStatus, serverActive bool) publicTopology {
 	topology := publicTopology{
 		Listen:    make([]publicNode, 0),
 		Interface: make([]publicNode, 0),
-		Server:    publicNode{Name: "Server", Active: serverActive, RSSI: nil},
+		Server:    publicNode{Name: "Server", Version: version.Get(), Active: serverActive, RSSI: nil},
 		Broadcast: make([]publicNode, 0),
 	}
 
@@ -961,6 +967,7 @@ func buildPublicTopology(nodes []NodeStatus, serverActive bool) publicTopology {
 		public := publicNode{
 			PeerID:       node.PeerID,
 			Name:         name,
+			Version:      node.Version,
 			Active:       node.Active,
 			RSSI:         node.RSSI,
 			SNR:          node.SNR,

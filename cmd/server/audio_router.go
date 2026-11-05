@@ -48,6 +48,8 @@ type mixedAudioRouter struct {
 	destinationActive map[uint16]bool
 	injectedFrames    chan injectedAudioFrame
 	injectedActive    bool
+	injectedNodeType  string
+	injectedPeerID    uint16
 }
 
 func newMixedAudioRouter() *mixedAudioRouter {
@@ -105,6 +107,27 @@ func (router *mixedAudioRouter) enqueueInjectedFrame(samples []int16) {
 	router.injectedFrames <- injectedAudioFrame{samples: frame}
 }
 
+// setInjectedTarget restricts the next injected audio to a node type ("broadcast", "interface", or "all") and optional peer.
+func (router *mixedAudioRouter) setInjectedTarget(nodeType string, peerID uint16) {
+	router.mu.Lock()
+	router.injectedNodeType = nodeType
+	router.injectedPeerID = peerID
+	router.mu.Unlock()
+}
+
+func (router *mixedAudioRouter) injectsTo(nodeType models.ApplicationType, peerID uint16) bool {
+	if !isInjectedAudioDestination(nodeType) {
+		return false
+	}
+	router.mu.Lock()
+	defer router.mu.Unlock()
+
+	if router.injectedNodeType != "" && router.injectedNodeType != "all" && router.injectedNodeType != string(nodeType) {
+		return false
+	}
+	return router.injectedPeerID == 0 || router.injectedPeerID == peerID
+}
+
 func (router *mixedAudioRouter) beginInjectedAudio() {
 	router.mu.Lock()
 	router.injectedActive = true
@@ -128,6 +151,8 @@ func (router *mixedAudioRouter) takeInjectedFrame() ([]int16, bool) {
 		if frame.done != nil {
 			router.mu.Lock()
 			router.injectedActive = false
+			router.injectedNodeType = ""
+			router.injectedPeerID = 0
 			router.mu.Unlock()
 			close(frame.done)
 			return nil, false
@@ -235,7 +260,7 @@ func routeMixedAudio(conn *net.UDPConn) {
 		if active {
 			mixed = mixPCM16(destinationFrames)
 		}
-		if isInjectedAudioDestination(destination.nodeType) && hasInjectedFrame {
+		if hasInjectedFrame && audioRouter.injectsTo(destination.nodeType, destination.peerID) {
 			active = true
 			mixed = injectedFrame
 		}
@@ -355,7 +380,7 @@ func peerHasRoutedAudioLocked(destination *models.NetworkPeer, now time.Time, ac
 
 // peersMu must be held by the caller.
 func peerIsAudioActiveLocked(peer *models.NetworkPeer, now time.Time, activeListenPeerID uint16) bool {
-	if isInjectedAudioDestination(peer.NodeType) && audioRouter.injectedAudioActive() {
+	if audioRouter.injectedAudioActive() && audioRouter.injectsTo(peer.NodeType, peer.PeerID) {
 		return true
 	}
 

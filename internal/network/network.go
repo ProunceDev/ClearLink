@@ -334,10 +334,11 @@ type ToServerHelloPacket struct {
 	Name            string
 	ProtocolVersion uint8
 	NodeType        models.ApplicationType
+	Version         string
 }
 
 func (p *ToServerHelloPacket) Marshal() ([]byte, error) {
-	buf := bytes.NewBuffer(make([]byte, 0, 4+len(p.AuthKey)+len(p.Name)+len(p.NodeType)))
+	buf := bytes.NewBuffer(make([]byte, 0, 5+len(p.AuthKey)+len(p.Name)+len(p.NodeType)+len(p.Version)))
 	buf.WriteByte(p.ProtocolVersion)
 	buf.WriteByte(uint8(len(p.AuthKey)))
 	buf.WriteString(p.AuthKey)
@@ -345,6 +346,12 @@ func (p *ToServerHelloPacket) Marshal() ([]byte, error) {
 	buf.WriteString(p.Name)
 	buf.WriteByte(uint8(len(p.NodeType)))
 	buf.WriteString(string(p.NodeType))
+	version := p.Version
+	if len(version) > 255 {
+		version = version[:255]
+	}
+	buf.WriteByte(uint8(len(version)))
+	buf.WriteString(version)
 	return buf.Bytes(), nil
 }
 
@@ -375,12 +382,24 @@ func UnmarshalToServerHello(payload []byte) (*ToServerHelloPacket, error) {
 	nodeTypeLen := int(payload[i])
 	i++
 	nodeType := string(payload[i : i+nodeTypeLen])
+	i += nodeTypeLen
+
+	// Version is optional so older nodes still connect.
+	nodeVersion := ""
+	if i < len(payload) {
+		versionLen := int(payload[i])
+		i++
+		if i+versionLen <= len(payload) {
+			nodeVersion = string(payload[i : i+versionLen])
+		}
+	}
 
 	return &ToServerHelloPacket{
 		ProtocolVersion: protocolVersion,
 		AuthKey:         authKey,
 		Name:            name,
 		NodeType:        models.ApplicationType(nodeType),
+		Version:         nodeVersion,
 	}, nil
 }
 

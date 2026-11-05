@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -29,6 +30,7 @@ const (
 	audioEventTypeAnnouncement = "announcement"
 	audioEventTypeRogerBeep    = "roger_beep"
 	audioEventTypePreRogerBeep = "pre_roger_beep"
+	maxAudioEventVolumePercent = 200
 )
 
 type audioEventManager struct {
@@ -311,9 +313,10 @@ func (manager *audioEventManager) startPlayback(event web.AudioEvent) bool {
 	manager.lastBroadcastActivity = time.Now()
 	manager.mu.Unlock()
 
+	audioRouter.setInjectedTarget(event.OutputNodeType, event.OutputPeerID)
 	audioRouter.beginInjectedAudio()
 	go func() {
-		if err := manager.playMedia(mediaID); err != nil {
+		if err := manager.playMedia(mediaID, event.VolumePercent); err != nil {
 			log.Printf("Audio event %q playback failed: %v", event.Name, err)
 		}
 		manager.mu.Lock()
@@ -323,7 +326,11 @@ func (manager *audioEventManager) startPlayback(event web.AudioEvent) bool {
 	return true
 }
 
-func (manager *audioEventManager) playMedia(mediaID string) error {
+func (manager *audioEventManager) playMedia(mediaID string, volumePercent int) error {
+	gain := float64(volumePercent) / 100
+	if volumePercent <= 0 {
+		gain = 1
+	}
 	done := make(chan struct{})
 	defer func() {
 		audioRouter.finishInjectedAudio(done)
@@ -356,7 +363,7 @@ func (manager *audioEventManager) playMedia(mediaID string) error {
 			usableBytes := len(pendingBytes) / 4 * 4
 			if usableBytes > 0 {
 				stereo := decodeStereoPCM16(pendingBytes[:usableBytes])
-				pendingSamples = append(pendingSamples, resamplePCM16(stereo, sampleRate, audioMixSampleRate)...)
+				pendingSamples = append(pendingSamples, applyPCM16Gain(resamplePCM16(stereo, sampleRate, audioMixSampleRate), gain)...)
 				pendingBytes = append([]byte(nil), pendingBytes[usableBytes:]...)
 			}
 			for len(pendingSamples) >= audioMixFrameSamples {
@@ -382,6 +389,23 @@ func (manager *audioEventManager) playMedia(mediaID string) error {
 		return fmt.Errorf("MP3 did not contain playable audio")
 	}
 	return nil
+}
+
+func applyPCM16Gain(samples []int16, gain float64) []int16 {
+	if gain == 1 {
+		return samples
+	}
+	for index, sample := range samples {
+		scaled := math.Round(float64(sample) * gain)
+		switch {
+		case scaled > math.MaxInt16:
+			scaled = math.MaxInt16
+		case scaled < math.MinInt16:
+			scaled = math.MinInt16
+		}
+		samples[index] = int16(scaled)
+	}
+	return samples
 }
 
 func decodeStereoPCM16(contents []byte) []int16 {
@@ -414,6 +438,19 @@ func (manager *audioEventManager) normalize(
 	}
 	if event.SourceNodeType != "all" && event.SourceNodeType != "listen" && event.SourceNodeType != "interface" {
 		return web.AudioEvent{}, fmt.Errorf("invalid source node type")
+	}
+	event.OutputNodeType = strings.ToLower(strings.TrimSpace(event.OutputNodeType))
+	if event.OutputNodeType == "" {
+		event.OutputNodeType = "all"
+	}
+	if event.OutputNodeType != "all" && event.OutputNodeType != "broadcast" && event.OutputNodeType != "interface" {
+		return web.AudioEvent{}, fmt.Errorf("invalid output node type")
+	}
+	if event.VolumePercent == 0 {
+		event.VolumePercent = 100
+	}
+	if event.VolumePercent < 0 || event.VolumePercent > maxAudioEventVolumePercent {
+		return web.AudioEvent{}, fmt.Errorf("volume must be between 1 and %d percent", maxAudioEventVolumePercent)
 	}
 
 	event.MediaIDs = uniqueAudioMediaIDs(event.MediaIDs)

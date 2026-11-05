@@ -1297,6 +1297,9 @@ func (m *Manager) startSingle(name string) error {
 	info("Starting %s", name)
 
 	cmd := exec.Command(path)
+	if m.config.Version != "" {
+		cmd.Env = append(os.Environ(), "CLEARLINK_VERSION="+m.config.Version)
+	}
 	if runtime.GOOS == "linux" {
 		libDir := filepath.Join(filepath.Dir(path), "lib")
 		if fileExists(libDir) {
@@ -1305,8 +1308,12 @@ func (m *Manager) startSingle(name string) error {
 				ldLibraryPath = ldLibraryPath + ":" + existing
 			}
 
-			env := make([]string, 0, len(os.Environ())+1)
-			for _, entry := range os.Environ() {
+			base := cmd.Env
+			if base == nil {
+				base = os.Environ()
+			}
+			env := make([]string, 0, len(base)+1)
+			for _, entry := range base {
 				if strings.HasPrefix(entry, "LD_LIBRARY_PATH=") {
 					continue
 				}
