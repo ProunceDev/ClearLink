@@ -101,6 +101,7 @@ func startWebServer() {
 		AdminPassword:    adminPassword,
 		MediaDir:         audioEventMediaDir,
 		GetNodes:         getNodeStatuses,
+		GetServerActive:  audioRouter.injectedAudioActive,
 		SaveConfig:       applyNodeConfigUpdate,
 		GetAudioEvents:   audioEvents.list,
 		SaveAudioEvent:   audioEvents.save,

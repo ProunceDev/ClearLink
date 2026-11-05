@@ -90,6 +90,43 @@ func TestPeerIsAudioActiveReflectsEligibleDestinationRoute(t *testing.T) {
 	}
 }
 
+func TestPeerIsAudioActiveReflectsInjectedPlayback(t *testing.T) {
+	peersMu.Lock()
+	originalPeers := peers
+	peers = map[uint16]*models.NetworkPeer{
+		5: {PeerID: 5, NodeType: models.ApplicationTypeListen},
+		6: {PeerID: 6, NodeType: models.ApplicationTypeInterface},
+		7: {PeerID: 7, NodeType: models.ApplicationTypeBroadcast},
+	}
+	peersMu.Unlock()
+
+	originalRouter := audioRouter
+	audioRouter = newMixedAudioRouter()
+	audioRouter.beginInjectedAudio()
+	t.Cleanup(func() {
+		audioRouter = originalRouter
+		peersMu.Lock()
+		peers = originalPeers
+		peersMu.Unlock()
+	})
+
+	peersMu.RLock()
+	listenActive := peerIsAudioActiveLocked(peers[5], testNow, 0)
+	interfaceActive := peerIsAudioActiveLocked(peers[6], testNow, 0)
+	broadcastActive := peerIsAudioActiveLocked(peers[7], testNow, 0)
+	peersMu.RUnlock()
+
+	if listenActive {
+		t.Fatal("listen source should not be active during injected playback")
+	}
+	if !interfaceActive {
+		t.Fatal("interface output should be active during injected playback")
+	}
+	if !broadcastActive {
+		t.Fatal("broadcast output should be active during injected playback")
+	}
+}
+
 func TestMixPCM16SaturatesCombinedSources(t *testing.T) {
 	first := make([]int16, audioMixFrameSamples)
 	second := make([]int16, audioMixFrameSamples)
@@ -231,7 +268,7 @@ func TestRouteMixedAudioMixesRFAndInterfaceButDoesNotReturnInterfaceInput(t *tes
 	}
 }
 
-func TestRouteMixedAudioOverridesBroadcastWithInjectedFrame(t *testing.T) {
+func TestRouteMixedAudioRoutesInjectedFrameToAllOutputs(t *testing.T) {
 	serverConn, err := net.ListenUDP("udp", nil)
 	if err != nil {
 		t.Fatalf("listen server UDP socket: %v", err)
@@ -305,8 +342,8 @@ func TestRouteMixedAudioOverridesBroadcastWithInjectedFrame(t *testing.T) {
 	if packet := receiveRoutedAudioPacket(t, broadcastConn); packet.Samples[0] != 7000 {
 		t.Fatalf("broadcast injected sample = %d, want 7000", packet.Samples[0])
 	}
-	if packet := receiveRoutedAudioPacket(t, interfaceConn); packet.Samples[0] != 1000 {
-		t.Fatalf("interface normal sample = %d, want 1000", packet.Samples[0])
+	if packet := receiveRoutedAudioPacket(t, interfaceConn); packet.Samples[0] != 7000 {
+		t.Fatalf("interface injected sample = %d, want 7000", packet.Samples[0])
 	}
 }
 

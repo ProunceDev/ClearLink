@@ -15,7 +15,7 @@ func TestBuildPublicTopologyIncludesInterfaceNodes(t *testing.T) {
 		{PeerID: 1, Name: "RF", NodeType: "listen", Active: true, LastKeyUpAgo: "12s"},
 		{PeerID: 2, Name: "Gateway", NodeType: "interface", Active: true},
 		{PeerID: 3, Name: "Relay", NodeType: "broadcast", Active: true},
-	})
+	}, false)
 
 	if len(topology.Listen) != 1 || topology.Listen[0].Name != "RF" {
 		t.Fatalf("listen topology = %+v, want RF node", topology.Listen)
@@ -28,6 +28,43 @@ func TestBuildPublicTopologyIncludesInterfaceNodes(t *testing.T) {
 	}
 	if len(topology.Broadcast) != 1 || topology.Broadcast[0].Name != "Relay" || !topology.Broadcast[0].Active {
 		t.Fatalf("broadcast topology = %+v, want Relay node", topology.Broadcast)
+	}
+}
+
+func TestBuildPublicTopologyIncludesServerActivity(t *testing.T) {
+	topology := buildPublicTopology(nil, true)
+	if !topology.Server.Active {
+		t.Fatal("server should be active during injected playback")
+	}
+}
+
+func TestPublicTopologyHandlerReportsServerActivity(t *testing.T) {
+	server, err := NewServer(Options{
+		MediaDir: t.TempDir(),
+		GetNodes: func() []NodeStatus {
+			return nil
+		},
+		GetServerActive: func() bool {
+			return true
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/public/topology", nil)
+	server.handlePublicTopology(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("topology status = %d, want %d", response.Code, http.StatusOK)
+	}
+
+	var topology publicTopology
+	if err := json.NewDecoder(response.Body).Decode(&topology); err != nil {
+		t.Fatalf("decode topology response: %v", err)
+	}
+	if !topology.Server.Active {
+		t.Fatal("topology response should report an active server")
 	}
 }
 

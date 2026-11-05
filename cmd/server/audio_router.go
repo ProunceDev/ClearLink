@@ -111,6 +111,13 @@ func (router *mixedAudioRouter) beginInjectedAudio() {
 	router.mu.Unlock()
 }
 
+func (router *mixedAudioRouter) injectedAudioActive() bool {
+	router.mu.Lock()
+	defer router.mu.Unlock()
+
+	return router.injectedActive
+}
+
 func (router *mixedAudioRouter) finishInjectedAudio(done chan<- struct{}) {
 	router.injectedFrames <- injectedAudioFrame{done: done}
 }
@@ -228,7 +235,7 @@ func routeMixedAudio(conn *net.UDPConn) {
 		if active {
 			mixed = mixPCM16(destinationFrames)
 		}
-		if destination.nodeType == models.ApplicationTypeBroadcast && hasInjectedFrame {
+		if isInjectedAudioDestination(destination.nodeType) && hasInjectedFrame {
 			active = true
 			mixed = injectedFrame
 		}
@@ -348,6 +355,10 @@ func peerHasRoutedAudioLocked(destination *models.NetworkPeer, now time.Time, ac
 
 // peersMu must be held by the caller.
 func peerIsAudioActiveLocked(peer *models.NetworkPeer, now time.Time, activeListenPeerID uint16) bool {
+	if isInjectedAudioDestination(peer.NodeType) && audioRouter.injectedAudioActive() {
+		return true
+	}
+
 	switch peer.NodeType {
 	case models.ApplicationTypeListen:
 		return peer.PeerID == activeListenPeerID && isAudioLive(peer, now)
@@ -358,6 +369,10 @@ func peerIsAudioActiveLocked(peer *models.NetworkPeer, now time.Time, activeList
 	default:
 		return false
 	}
+}
+
+func isInjectedAudioDestination(nodeType models.ApplicationType) bool {
+	return nodeType == models.ApplicationTypeBroadcast || nodeType == models.ApplicationTypeInterface
 }
 
 func shouldRouteAudio(source audioRouteSource, destination audioRouteDestination) bool {

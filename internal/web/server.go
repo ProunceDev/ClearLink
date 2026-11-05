@@ -148,6 +148,7 @@ type Options struct {
 	AdminPassword    string
 	MediaDir         string
 	GetNodes         func() []NodeStatus
+	GetServerActive  func() bool
 	SaveConfig       func(peerID uint16, key, applicationType, value string) error
 	GetAudioEvents   func() []AudioEvent
 	SaveAudioEvent   func(event AudioEvent) (AudioEvent, error)
@@ -161,6 +162,7 @@ type Server struct {
 	password         string
 	mediaDir         string
 	getNodes         func() []NodeStatus
+	getServerActive  func() bool
 	saveConfig       func(peerID uint16, key, applicationType, value string) error
 	getAudioEvents   func() []AudioEvent
 	saveAudioEvent   func(event AudioEvent) (AudioEvent, error)
@@ -189,6 +191,7 @@ func NewServer(options Options) (*Server, error) {
 		password:         options.AdminPassword,
 		mediaDir:         mediaDir,
 		getNodes:         options.GetNodes,
+		getServerActive:  options.GetServerActive,
 		saveConfig:       options.SaveConfig,
 		getAudioEvents:   options.GetAudioEvents,
 		saveAudioEvent:   options.SaveAudioEvent,
@@ -263,7 +266,8 @@ func (s *Server) handlePublicTopology(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	topology := buildPublicTopology(s.getNodes())
+	serverActive := s.getServerActive != nil && s.getServerActive()
+	topology := buildPublicTopology(s.getNodes(), serverActive)
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(topology); err != nil {
 		log.Printf("Failed to encode topology: %v", err)
@@ -941,11 +945,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-func buildPublicTopology(nodes []NodeStatus) publicTopology {
+func buildPublicTopology(nodes []NodeStatus, serverActive bool) publicTopology {
 	topology := publicTopology{
 		Listen:    make([]publicNode, 0),
 		Interface: make([]publicNode, 0),
-		Server:    publicNode{Name: "Server", RSSI: nil},
+		Server:    publicNode{Name: "Server", Active: serverActive, RSSI: nil},
 		Broadcast: make([]publicNode, 0),
 	}
 
