@@ -520,6 +520,13 @@ class AdminApi {
     _ensureSuccess(response, const [204], 'Unable to delete audio event');
   }
 
+  Future<void> playAudioEvent(String eventId) async {
+    final response = await http.post(
+      _uri('/api/admin/audio-events/$eventId/play'),
+    );
+    _ensureSuccess(response, const [202], 'Unable to start audio event');
+  }
+
   Future<MediaAsset> uploadMedia(
     SelectedMediaFile file, {
     void Function(int sentBytes, int totalBytes)? onProgress,
@@ -1620,7 +1627,7 @@ class _MediaLibraryTabState extends State<MediaLibraryTab> {
   String? _errorMessage;
   String? _playingId;
   bool _isLoading = true;
-  bool _isUploading = false;
+  bool _isUploadDialogOpen = false;
 
   @override
   void initState() {
@@ -1666,40 +1673,60 @@ class _MediaLibraryTabState extends State<MediaLibraryTab> {
   }
 
   Future<void> _upload() async {
-    if (_isUploading) return;
-    setState(() => _isUploading = true);
+    if (_isUploadDialogOpen) return;
+    final uploadState = ValueNotifier<_MediaUploadState>(
+      _MediaUploadState.awaitingFile(),
+    );
+    setState(() => _isUploadDialogOpen = true);
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => _MediaUploadDialog(
+          state: uploadState,
+          onChooseFile: () => _selectAndUpload(uploadState),
+        ),
+      );
+    } finally {
+      uploadState.dispose();
+      if (mounted) {
+        setState(() => _isUploadDialogOpen = false);
+      }
+    }
+  }
+
+  Future<void> _selectAndUpload(
+    ValueNotifier<_MediaUploadState> uploadState,
+  ) async {
+    if (!uploadState.value.canChooseFile) return;
+    uploadState.value = _MediaUploadState.openingPicker();
+
     SelectedMediaFile? file;
     try {
       file = await chooseMp3File();
     } catch (_) {
       if (mounted) {
-        setState(() => _isUploading = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Unable to open the MP3 file picker')),
+        uploadState.value = _MediaUploadState.failed(
+          'The browser could not open the MP3 file picker.',
         );
       }
       return;
     }
-    if (file == null || !mounted) {
-      if (mounted) {
-        setState(() => _isUploading = false);
-      }
+
+    if (!mounted) return;
+    if (file == null) {
+      uploadState.value = _MediaUploadState.awaitingFile(
+        message: 'No MP3 file was selected. Choose a file to continue.',
+      );
       return;
     }
 
-    final uploadState = ValueNotifier<_MediaUploadState>(
-      _MediaUploadState.uploading(file.name),
-    );
-    showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) => _MediaUploadDialog(state: uploadState),
-    ).whenComplete(uploadState.dispose);
-
+    uploadState.value = _MediaUploadState.uploading(file);
     try {
       final asset = await widget.api.uploadMedia(
         file,
         onProgress: (sentBytes, totalBytes) {
+          if (!mounted) return;
           uploadState.value = uploadState.value.copyWith(
             sentBytes: sentBytes,
             totalBytes: totalBytes,
@@ -1710,23 +1737,21 @@ class _MediaLibraryTabState extends State<MediaLibraryTab> {
       await _loadMedia();
       if (!mounted) return;
       uploadState.value = uploadState.value.copyWith(
-        completed: true,
+        phase: _MediaUploadPhase.completed,
         message: '${asset.name} is ready in the media library.',
       );
     } on AdminApiException catch (error) {
       if (!mounted) return;
       uploadState.value = uploadState.value.copyWith(
+        phase: _MediaUploadPhase.failed,
         errorMessage: error.message,
       );
     } catch (_) {
       if (!mounted) return;
       uploadState.value = uploadState.value.copyWith(
+        phase: _MediaUploadPhase.failed,
         errorMessage: 'Unable to upload the MP3 file. Check the connection and try again.',
       );
-    } finally {
-      if (mounted) {
-        setState(() => _isUploading = false);
-      }
     }
   }
 
@@ -1835,15 +1860,15 @@ class _MediaLibraryTabState extends State<MediaLibraryTab> {
                     ],
                   ),
                   FilledButton.icon(
-                    onPressed: _isUploading ? null : _upload,
-                    icon: _isUploading
+                    onPressed: _isUploadDialogOpen ? null : _upload,
+                    icon: _isUploadDialogOpen
                         ? const SizedBox(
                             width: 16,
                             height: 16,
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Icon(Icons.upload_file_outlined),
-                    label: Text(_isUploading ? 'Uploading' : 'Upload MP3'),
+                    label: const Text('Upload MP3'),
                   ),
                 ],
               ),
@@ -1900,28 +1925,73 @@ class _MediaLibraryTabState extends State<MediaLibraryTab> {
   }
 }
 
+enum _MediaUploadPhase {
+  awaitingFile,
+  openingPicker,
+  uploading,
+  completed,
+  failed,
+}
+
 class _MediaUploadState {
-  final String fileName;
+  final _MediaUploadPhase phase;
+  final String? fileName;
+  final int fileSizeBytes;
   final int sentBytes;
   final int totalBytes;
-  final bool completed;
   final String? message;
   final String? errorMessage;
 
   const _MediaUploadState({
-    required this.fileName,
+    required this.phase,
+    this.fileName,
+    this.fileSizeBytes = 0,
     this.sentBytes = 0,
     this.totalBytes = 0,
-    this.completed = false,
     this.message,
     this.errorMessage,
   });
 
-  factory _MediaUploadState.uploading(String fileName) {
-    return _MediaUploadState(fileName: fileName);
+  factory _MediaUploadState.awaitingFile({String? message}) {
+    return _MediaUploadState(
+      phase: _MediaUploadPhase.awaitingFile,
+      message: message,
+    );
   }
 
-  bool get isTerminal => completed || errorMessage != null;
+  factory _MediaUploadState.openingPicker() {
+    return const _MediaUploadState(phase: _MediaUploadPhase.openingPicker);
+  }
+
+  factory _MediaUploadState.uploading(SelectedMediaFile file) {
+    return _MediaUploadState(
+      phase: _MediaUploadPhase.uploading,
+      fileName: file.name,
+      fileSizeBytes: file.sizeBytes,
+    );
+  }
+
+  factory _MediaUploadState.failed(String errorMessage) {
+    return _MediaUploadState(
+      phase: _MediaUploadPhase.failed,
+      errorMessage: errorMessage,
+    );
+  }
+
+  bool get isTerminal {
+    return phase == _MediaUploadPhase.completed ||
+        phase == _MediaUploadPhase.failed;
+  }
+
+  bool get canChooseFile {
+    return phase == _MediaUploadPhase.awaitingFile ||
+        phase == _MediaUploadPhase.failed;
+  }
+
+  bool get canDismiss {
+    return phase != _MediaUploadPhase.openingPicker &&
+        phase != _MediaUploadPhase.uploading;
+  }
 
   double? get progress {
     if (totalBytes <= 0) return null;
@@ -1929,17 +1999,18 @@ class _MediaUploadState {
   }
 
   _MediaUploadState copyWith({
+    _MediaUploadPhase? phase,
     int? sentBytes,
     int? totalBytes,
-    bool? completed,
     String? message,
     String? errorMessage,
   }) {
     return _MediaUploadState(
+      phase: phase ?? this.phase,
       fileName: fileName,
+      fileSizeBytes: fileSizeBytes,
       sentBytes: sentBytes ?? this.sentBytes,
       totalBytes: totalBytes ?? this.totalBytes,
-      completed: completed ?? this.completed,
       message: message ?? this.message,
       errorMessage: errorMessage ?? this.errorMessage,
     );
@@ -1948,8 +2019,9 @@ class _MediaUploadState {
 
 class _MediaUploadDialog extends StatelessWidget {
   final ValueNotifier<_MediaUploadState> state;
+  final Future<void> Function() onChooseFile;
 
-  const _MediaUploadDialog({required this.state});
+  const _MediaUploadDialog({required this.state, required this.onChooseFile});
 
   @override
   Widget build(BuildContext context) {
@@ -1959,31 +2031,40 @@ class _MediaUploadDialog extends StatelessWidget {
         final progressPercent = upload.progress == null
             ? null
             : (upload.progress! * 100).round();
-        final status =
-            upload.errorMessage ??
-            upload.message ??
-            (progressPercent == null
+        final status = switch (upload.phase) {
+          _MediaUploadPhase.awaitingFile =>
+            upload.message ?? 'Choose an MP3 file from this browser.',
+          _MediaUploadPhase.openingPicker =>
+            'Opening the browser file picker...',
+          _MediaUploadPhase.uploading =>
+            progressPercent == null
                 ? 'Uploading to the ClearLink server...'
-                : 'Uploading... $progressPercent%');
+                : 'Uploading... $progressPercent%',
+          _MediaUploadPhase.completed =>
+            upload.message ?? 'The MP3 upload completed.',
+          _MediaUploadPhase.failed =>
+            upload.errorMessage ?? 'The MP3 upload could not be completed.',
+        };
+        final icon = switch (upload.phase) {
+          _MediaUploadPhase.awaitingFile => Icons.audio_file_outlined,
+          _MediaUploadPhase.openingPicker => Icons.folder_open_outlined,
+          _MediaUploadPhase.uploading => Icons.cloud_upload_outlined,
+          _MediaUploadPhase.completed => Icons.check_circle_outline,
+          _MediaUploadPhase.failed => Icons.error_outline,
+        };
+        final iconColor = switch (upload.phase) {
+          _MediaUploadPhase.completed => const Color(0xFF86EFAC),
+          _MediaUploadPhase.failed => const Color(0xFFFCA5A5),
+          _ => const Color(0xFF67E8F9),
+        };
 
         return PopScope(
-          canPop: upload.isTerminal,
+          canPop: upload.canDismiss,
           child: AlertDialog(
             backgroundColor: const Color(0xFF101A2E),
             title: Row(
               children: [
-                Icon(
-                  upload.errorMessage != null
-                      ? Icons.error_outline
-                      : upload.completed
-                      ? Icons.check_circle_outline
-                      : Icons.cloud_upload_outlined,
-                  color: upload.errorMessage != null
-                      ? const Color(0xFFFCA5A5)
-                      : upload.completed
-                      ? const Color(0xFF86EFAC)
-                      : const Color(0xFF67E8F9),
-                ),
+                Icon(icon, color: iconColor),
                 const SizedBox(width: 10),
                 const Text('MP3 upload', style: TextStyle(color: Colors.white)),
               ],
@@ -1994,22 +2075,43 @@ class _MediaUploadDialog extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    upload.fileName,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w600,
+                  if (upload.fileName != null) ...[
+                    Text(
+                      upload.fileName!,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 18),
-                  LinearProgressIndicator(value: upload.progress),
+                    if (upload.fileSizeBytes > 0) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        _formatBytes(upload.fileSizeBytes),
+                        style: const TextStyle(
+                          color: Color(0xFFA9B7C9),
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 18),
+                  ],
+                  if (upload.phase == _MediaUploadPhase.uploading ||
+                      upload.phase == _MediaUploadPhase.openingPicker)
+                    LinearProgressIndicator(
+                      value: upload.phase == _MediaUploadPhase.uploading
+                          ? upload.progress
+                          : null,
+                    ),
+                  if (upload.phase == _MediaUploadPhase.uploading ||
+                      upload.phase == _MediaUploadPhase.openingPicker)
+                    const SizedBox(height: 12),
                   const SizedBox(height: 12),
                   Text(
                     status,
                     style: TextStyle(
-                      color: upload.errorMessage != null
+                      color: upload.phase == _MediaUploadPhase.failed
                           ? const Color(0xFFFCA5A5)
                           : const Color(0xFFA9B7C9),
                     ),
@@ -2018,10 +2120,26 @@ class _MediaUploadDialog extends StatelessWidget {
               ),
             ),
             actions: [
-              if (upload.isTerminal)
+              if (upload.phase == _MediaUploadPhase.completed)
                 FilledButton(
                   onPressed: () => Navigator.of(context).pop(),
                   child: const Text('Done'),
+                ),
+              if (upload.phase != _MediaUploadPhase.completed &&
+                  upload.canDismiss)
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: Text(upload.isTerminal ? 'Close' : 'Cancel'),
+                ),
+              if (upload.canChooseFile)
+                FilledButton.icon(
+                  onPressed: onChooseFile,
+                  icon: const Icon(Icons.upload_file_outlined),
+                  label: Text(
+                    upload.phase == _MediaUploadPhase.failed
+                        ? 'Choose another MP3'
+                        : 'Choose MP3',
+                  ),
                 ),
             ],
           ),

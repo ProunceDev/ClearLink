@@ -152,6 +152,7 @@ type Options struct {
 	GetAudioEvents   func() []AudioEvent
 	SaveAudioEvent   func(event AudioEvent) (AudioEvent, error)
 	DeleteAudioEvent func(eventID string) error
+	PlayAudioEvent   func(eventID string) error
 }
 
 type Server struct {
@@ -164,6 +165,7 @@ type Server struct {
 	getAudioEvents   func() []AudioEvent
 	saveAudioEvent   func(event AudioEvent) (AudioEvent, error)
 	deleteAudioEvent func(eventID string) error
+	playAudioEvent   func(eventID string) error
 }
 
 func NewServer(options Options) (*Server, error) {
@@ -191,6 +193,7 @@ func NewServer(options Options) (*Server, error) {
 		getAudioEvents:   options.GetAudioEvents,
 		saveAudioEvent:   options.SaveAudioEvent,
 		deleteAudioEvent: options.DeleteAudioEvent,
+		playAudioEvent:   options.PlayAudioEvent,
 	}, nil
 }
 
@@ -555,22 +558,31 @@ func (s *Server) handleAdminAudioEvents(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleAdminAudioEventItem(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
 	if !s.isAuthorized(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	if s.deleteAudioEvent == nil {
-		http.Error(w, "audio event delete handler is not configured", http.StatusNotImplemented)
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/admin/audio-events/")
+	parts := strings.Split(path, "/")
+	if len(parts) == 0 || !isValidMediaID(parts[0]) {
+		http.NotFound(w, r)
 		return
 	}
 
-	eventID := strings.TrimPrefix(r.URL.Path, "/api/admin/audio-events/")
-	if !isValidMediaID(eventID) {
-		http.NotFound(w, r)
+	switch {
+	case len(parts) == 1 && r.Method == http.MethodDelete:
+		s.handleAdminAudioEventDelete(w, r, parts[0])
+	case len(parts) == 2 && parts[1] == "play" && r.Method == http.MethodPost:
+		s.handleAdminAudioEventPlay(w, r, parts[0])
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleAdminAudioEventDelete(w http.ResponseWriter, r *http.Request, eventID string) {
+	if s.deleteAudioEvent == nil {
+		http.Error(w, "audio event delete handler is not configured", http.StatusNotImplemented)
 		return
 	}
 	if err := s.deleteAudioEvent(eventID); err != nil {
@@ -582,6 +594,22 @@ func (s *Server) handleAdminAudioEventItem(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleAdminAudioEventPlay(w http.ResponseWriter, r *http.Request, eventID string) {
+	if s.playAudioEvent == nil {
+		http.Error(w, "audio event playback is not configured", http.StatusNotImplemented)
+		return
+	}
+	if err := s.playAudioEvent(eventID); err != nil {
+		if os.IsNotExist(err) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func (s *Server) handleAdminMedia(w http.ResponseWriter, r *http.Request) {

@@ -147,6 +147,27 @@ func (manager *audioEventManager) delete(eventID string) error {
 	return os.ErrNotExist
 }
 
+func (manager *audioEventManager) playNow(eventID string) error {
+	manager.mu.Lock()
+	var event *web.AudioEvent
+	for _, candidate := range manager.events {
+		if candidate.ID == eventID {
+			copy := cloneAudioEvent(candidate)
+			event = &copy
+			break
+		}
+	}
+	manager.mu.Unlock()
+
+	if event == nil {
+		return os.ErrNotExist
+	}
+	if !manager.startPlayback(*event) {
+		return fmt.Errorf("another audio event is already playing")
+	}
+	return nil
+}
+
 func (manager *audioEventManager) startScheduler() {
 	go func() {
 		ticker := time.NewTicker(time.Second)

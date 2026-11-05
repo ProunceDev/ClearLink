@@ -6,6 +6,8 @@ class SelectedMediaFile {
   final Uint8List bytes;
 
   const SelectedMediaFile({required this.name, required this.bytes});
+
+  int get sizeBytes => bytes.length;
 }
 
 class MediaUploadResponse {

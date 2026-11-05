@@ -14,6 +14,7 @@ class _AudioEventsTabState extends State<AudioEventsTab> {
   List<ServerAudioEvent> _events = const [];
   List<MediaAsset> _media = const [];
   String? _errorMessage;
+  String? _startingEventId;
   bool _isLoading = true;
 
   @override
@@ -90,6 +91,31 @@ class _AudioEventsTabState extends State<AudioEventsTab> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Unable to update audio event')),
       );
+    }
+  }
+
+  Future<void> _playNow(ServerAudioEvent event) async {
+    if (_startingEventId != null) return;
+    setState(() => _startingEventId = event.id);
+    try {
+      await widget.api.playAudioEvent(event.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('${event.name} playback started')));
+    } on AdminApiException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(error.message)));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Unable to start audio event playback')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _startingEventId = null);
+      }
     }
   }
 
@@ -243,6 +269,9 @@ class _AudioEventsTabState extends State<AudioEventsTab> {
                     onEdit: () => _edit(event),
                     onDelete: () => _delete(event),
                     onEnabledChanged: (value) => _toggle(event, value),
+                    isStarting: _startingEventId == event.id,
+                    isPlayDisabled: _startingEventId != null,
+                    onPlayNow: () => _playNow(event),
                   );
                 },
               ),
@@ -259,6 +288,9 @@ class _AudioEventCard extends StatelessWidget {
   final VoidCallback onEdit;
   final VoidCallback onDelete;
   final ValueChanged<bool> onEnabledChanged;
+  final bool isStarting;
+  final bool isPlayDisabled;
+  final VoidCallback onPlayNow;
 
   const _AudioEventCard({
     required this.event,
@@ -266,6 +298,9 @@ class _AudioEventCard extends StatelessWidget {
     required this.onEdit,
     required this.onDelete,
     required this.onEnabledChanged,
+    required this.isStarting,
+    required this.isPlayDisabled,
+    required this.onPlayNow,
   });
 
   @override
@@ -343,6 +378,25 @@ class _AudioEventCard extends StatelessWidget {
               Switch.adaptive(
                 value: event.enabled,
                 onChanged: onEnabledChanged,
+              ),
+              Tooltip(
+                message: isStarting
+                    ? 'Starting ${event.name}'
+                    : 'Play ${event.name} now',
+                child: IconButton.filled(
+                  onPressed: isPlayDisabled ? null : onPlayNow,
+                  icon: isStarting
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.play_arrow),
+                  style: IconButton.styleFrom(
+                    backgroundColor: const Color(0xFF2DD4BF),
+                    foregroundColor: const Color(0xFF07111B),
+                  ),
+                ),
               ),
               Tooltip(
                 message: 'Edit ${event.name}',

@@ -206,6 +206,7 @@ func TestAdminAudioEventHandlers(t *testing.T) {
 	}}
 	var saved AudioEvent
 	var deletedID string
+	var playedID string
 	server, err := NewServer(Options{
 		AdminUsername: "admin",
 		AdminPassword: "secret",
@@ -223,6 +224,10 @@ func TestAdminAudioEventHandlers(t *testing.T) {
 		},
 		DeleteAudioEvent: func(id string) error {
 			deletedID = id
+			return nil
+		},
+		PlayAudioEvent: func(id string) error {
+			playedID = id
 			return nil
 		},
 	})
@@ -258,6 +263,21 @@ func TestAdminAudioEventHandlers(t *testing.T) {
 	}
 	if saved.ID != eventID || saved.Type != "pre_roger_beep" || saved.SourceNodeType != "listen" {
 		t.Fatalf("saved audio event = %+v, want request with generated ID", saved)
+	}
+
+	playRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/api/admin/audio-events/"+eventID+"/play",
+		nil,
+	)
+	playRequest.SetBasicAuth("admin", "secret")
+	playResponse := httptest.NewRecorder()
+	server.handleAdminAudioEventItem(playResponse, playRequest)
+	if playResponse.Code != http.StatusAccepted {
+		t.Fatalf("audio event play status = %d, want %d", playResponse.Code, http.StatusAccepted)
+	}
+	if playedID != eventID {
+		t.Fatalf("played event ID = %q, want %q", playedID, eventID)
 	}
 
 	deleteRequest := httptest.NewRequest(http.MethodDelete, "/api/admin/audio-events/"+eventID, nil)

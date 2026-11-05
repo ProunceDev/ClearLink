@@ -105,6 +105,7 @@ func startWebServer() {
 		GetAudioEvents:   audioEvents.list,
 		SaveAudioEvent:   audioEvents.save,
 		DeleteAudioEvent: audioEvents.delete,
+		PlayAudioEvent:   audioEvents.playNow,
 	})
 	if err != nil {
 		log.Fatalf("Failed to initialize API server: %v", err)
